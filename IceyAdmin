@@ -136,13 +136,27 @@ local S = {
 	dancing          = false,
 	danceTrack       = nil,
 
-	npcKillAura      = false,
-	npcKillConn      = nil,
+	chamsOn          = false,
+	chamsMenuOpen    = false,
+	chamsMenuKey     = Enum.KeyCode.C,
+	chamsWaitingKey  = false,
+	chamsFillColor   = Color3.fromRGB(88, 101, 242),
+	chamsOutlineCol  = Color3.new(1, 1, 1),
+	chamsFillTrans   = 0.5,
+	chamsOutlineTrans= 0,
+
+	fakeLagOn        = false,
+	fakeLagConn      = nil,
+	
+	antiAfkOn        = false,
+	antiAfkConn      = nil,
 }
 
 -- forward declarations for functions needed across sections
 local openBar, closeBar
 local openHitboxMenu, closeHitboxMenu
+local openChamsMenu, closeChamsMenu
+local makeDraggable
 
 -- ╔═══════════════════════════════════════════╗
 -- ║  PALETTE                                  ║
@@ -259,6 +273,36 @@ local function pad(p, t, b, l, r)
 		PaddingLeft = UDim.new(0, l or 0), PaddingRight = UDim.new(0, r or 0),
 		Parent = p,
 	})
+end
+
+local function makeDraggable(frame, topBar)
+	local dragging, dragInput, dragStart, startPos
+	local function update(input)
+		local delta = input.Position - dragStart
+		frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+	end
+	(topBar or frame).InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = frame.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+				end
+			end)
+		end
+	end)
+	frame.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+			dragInput = input
+		end
+	end)
+	UIS.InputChanged:Connect(function(input)
+		if input == dragInput and dragging then
+			update(input)
+		end
+	end)
 end
 
 local function tw(obj, props, dur, style, dir)
@@ -498,6 +542,7 @@ local panelClose = make("TextButton", {
 })
 panelClose.MouseEnter:Connect(function() tw(panelClose, {TextColor3 = P.text}, 0.15) end)
 panelClose.MouseLeave:Connect(function() tw(panelClose, {TextColor3 = P.dim}, 0.15) end)
+makeDraggable(panel, panelHeader)
 
 -- search box
 local panelSearch = make("TextBox", {
@@ -622,6 +667,7 @@ conn(sc.MouseButton1Click:Connect(function()
 	tw(setPanel, {Size = UDim2.new(0, 260, 0, 0)}, 0.2)
 	task.delay(0.2, function() setPanel.Visible = false end)
 end))
+makeDraggable(setPanel, sh)
 
 make("TextLabel", {
 	Text = "UI Theme",
@@ -1116,39 +1162,93 @@ local function startDance()
 	return true
 end
 
--- ── NPC CONTROLS ────────────────────────────
-local function stopNPCKillAura()
-	S.npcKillAura = false
-	if S.npcKillConn then
-		S.npcKillConn:Disconnect()
-		S.npcKillConn = nil
+-- ── KILL NPCS (one-shot) ────────────────────
+local function killAllNPCs()
+	local count = 0
+	for _, hum in ipairs(workspace:GetDescendants()) do
+		if hum:IsA("Humanoid") and not Players:GetPlayerFromCharacter(hum.Parent) then
+			local rootPart = hum.Parent:FindFirstChild("HumanoidRootPart")
+			if rootPart then
+				hum.Health = 0
+				count = count + 1
+			end
+		end
+	end
+	return count
+end
+
+-- ── FAKELAG ─────────────────────────────────
+local function stopFakeLag()
+	S.fakeLagOn = false
+	if S.fakeLagConn then S.fakeLagConn:Disconnect(); S.fakeLagConn = nil end
+	local hrp = getHRP()
+	if hrp then hrp.Anchored = false end
+end
+
+local function startFakeLag()
+	stopFakeLag()
+	S.fakeLagOn = true
+	S.fakeLagConn = conn(RunService.Heartbeat:Connect(function()
+		local hrp = getHRP()
+		if hrp and math.random() > 0.85 then
+			hrp.Anchored = true
+			task.wait(0.05)
+			if hrp and S.fakeLagOn then hrp.Anchored = false end
+		end
+	end))
+end
+
+-- ── ANTIAFK ─────────────────────────────────
+local function stopAntiAfk()
+	S.antiAfkOn = false
+	if S.antiAfkConn then S.antiAfkConn:Disconnect(); S.antiAfkConn = nil end
+end
+
+local function startAntiAfk()
+	stopAntiAfk()
+	S.antiAfkOn = true
+	local vu = game:GetService("VirtualUser")
+	S.antiAfkConn = conn(LP.Idled:Connect(function()
+		vu:CaptureController()
+		vu:ClickButton2(Vector2.zero)
+	end))
+end
+
+-- ── CHAMS ───────────────────────────────────
+local function applyChams(char)
+	if not char then return end
+	local hl = char:FindFirstChild("_AChamsHL")
+	if S.chamsOn then
+		if not hl then
+			hl = Instance.new("Highlight")
+			hl.Name = "_AChamsHL"
+			hl.Parent = char
+		end
+		hl.FillColor = S.chamsFillColor
+		hl.OutlineColor = S.chamsOutlineCol
+		hl.FillTransparency = S.chamsFillTrans
+		hl.OutlineTransparency = S.chamsOutlineTrans
+	else
+		if hl then hl:Destroy() end
 	end
 end
 
-local function startNPCKillAura()
-	stopNPCKillAura()
-	S.npcKillAura = true
-	S.npcKillConn = conn(RunService.Heartbeat:Connect(function()
-		local hrp = getHRP()
-		if not hrp then return end
-		
-		for _, obj in ipairs(workspace:GetDescendants()) do
-			if obj:IsA("Model") and obj ~= getChar() then
-				local hum = obj:FindFirstChildOfClass("Humanoid")
-				local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Torso") or obj:FindFirstChild("UpperTorso")
-				
-				if hum and root and hum.Health > 0 then
-					if not Players:GetPlayerFromCharacter(obj) then
-						local dist = (hrp.Position - root.Position).Magnitude
-						if dist < 25 then
-							root.CFrame = CFrame.new(root.Position.X, -50000, root.Position.Z)
-							root.Velocity = Vector3.new(0, -10000, 0)
-						end
-					end
-				end
-			end
+local function updateAllChams()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LP then
+			applyChams(plr.Character)
 		end
-	end))
+	end
+end
+
+local function stopChams()
+	S.chamsOn = false
+	updateAllChams()
+end
+
+local function startChams()
+	S.chamsOn = true
+	updateAllChams()
 end
 
 local function startGod()
@@ -1699,6 +1799,7 @@ local hbClose = make("TextButton", {
 })
 hbClose.MouseEnter:Connect(function() tw(hbClose, {TextColor3 = P.text}, 0.15) end)
 hbClose.MouseLeave:Connect(function() tw(hbClose, {TextColor3 = P.dim}, 0.15) end)
+makeDraggable(hbPanel, hbHeader)
 
 -- toggle key binder
 make("TextLabel", {
@@ -1982,6 +2083,156 @@ end
 
 conn(hbClose.MouseButton1Click:Connect(function()
 	closeHitboxMenu()
+end))
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  CHAMS MENU                               ║
+-- ╚═══════════════════════════════════════════╝
+local chamsPanel = make("Frame", {
+	Name = "ChamsPanel",
+	Size = UDim2.new(0, 280, 0, 0),
+	Position = UDim2.new(0.5, 0, 0.5, 0),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	BackgroundColor3 = P.bg,
+	BackgroundTransparency = 0.04,
+	Visible = false,
+	ClipsDescendants = true,
+	Parent = gui,
+})
+corner(chamsPanel, 14)
+bindAccent(stroke(chamsPanel, P.border, 1, 0.3), "Color")
+
+local chamsHeader = make("Frame", {
+	Size = UDim2.new(1, 0, 0, 44),
+	BackgroundTransparency = 1,
+	Parent = chamsPanel,
+})
+make("TextLabel", {
+	Text = "Chams Settings",
+	Font = Enum.Font.GothamMedium, TextSize = 14,
+	TextColor3 = P.text,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(1, -50, 1, 0),
+	Position = UDim2.new(0, 16, 0, 0),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = chamsHeader,
+})
+local chamsClose = make("TextButton", {
+	Text = "X",
+	Font = Enum.Font.GothamMedium, TextSize = 14,
+	TextColor3 = P.dim,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0, 44, 0, 44),
+	Position = UDim2.new(1, -44, 0, 0),
+	Parent = chamsHeader,
+})
+chamsClose.MouseEnter:Connect(function() tw(chamsClose, {TextColor3 = P.text}, 0.15) end)
+chamsClose.MouseLeave:Connect(function() tw(chamsClose, {TextColor3 = P.dim}, 0.15) end)
+makeDraggable(chamsPanel, chamsHeader)
+
+make("TextLabel", {
+	Text = "Toggle Key",
+	Font = Enum.Font.GothamMedium, TextSize = 11,
+	TextColor3 = P.dim,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0.5, -20, 0, 20),
+	Position = UDim2.new(0, 16, 0, 50),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = chamsPanel,
+})
+
+local chamsKeyBtn = make("TextButton", {
+	Text = "[ " .. S.chamsMenuKey.Name .. " ]",
+	Font = Enum.Font.GothamMedium, TextSize = 12,
+	TextColor3 = P.text,
+	BackgroundColor3 = P.bgLight,
+	AutoButtonColor = false,
+	Size = UDim2.new(0.5, -20, 0, 24),
+	Position = UDim2.new(0.5, 4, 0, 48),
+	Parent = chamsPanel,
+})
+corner(chamsKeyBtn, 6)
+bindAccent(stroke(chamsKeyBtn, P.accent, 1, 0.6), "Color")
+chamsKeyBtn.MouseEnter:Connect(function() tw(chamsKeyBtn, {BackgroundColor3 = P.bgHover}, 0.15) end)
+chamsKeyBtn.MouseLeave:Connect(function() tw(chamsKeyBtn, {BackgroundColor3 = P.bgLight}, 0.15) end)
+conn(chamsKeyBtn.MouseButton1Click:Connect(function()
+	if S.chamsWaitingKey then return end
+	S.chamsWaitingKey = true
+	chamsKeyBtn.Text = "Press a key..."
+	local tempConn
+	tempConn = UIS.InputBegan:Connect(function(inp)
+		if inp.UserInputType == Enum.UserInputType.Keyboard then
+			S.chamsMenuKey = inp.KeyCode
+			chamsKeyBtn.Text = "[ " .. inp.KeyCode.Name .. " ]"
+			S.chamsWaitingKey = false
+			tempConn:Disconnect()
+		end
+	end)
+	conn(tempConn)
+end))
+
+make("Frame", {
+	Size = UDim2.new(1, -32, 0, 1),
+	Position = UDim2.new(0, 16, 0, 80),
+	BackgroundColor3 = P.border,
+	BorderSizePixel = 0,
+	Parent = chamsPanel,
+})
+
+local chamsEnableBtn = make("TextButton", {
+	Text = "ENABLE CHAMS",
+	Font = Enum.Font.GothamBold, TextSize = 13,
+	TextColor3 = P.bg,
+	BackgroundColor3 = P.accent,
+	AutoButtonColor = false,
+	Size = UDim2.new(1, -32, 0, 32),
+	Position = UDim2.new(0, 16, 0, 96),
+	Parent = chamsPanel,
+})
+corner(chamsEnableBtn, 8)
+bindAccent(chamsEnableBtn, "BackgroundColor3")
+chamsEnableBtn.MouseEnter:Connect(function() tw(chamsEnableBtn, {BackgroundTransparency = 0.15}, 0.15) end)
+chamsEnableBtn.MouseLeave:Connect(function() tw(chamsEnableBtn, {BackgroundTransparency = 0}, 0.15) end)
+
+conn(chamsEnableBtn.MouseButton1Click:Connect(function()
+	if S.chamsOn then
+		stopChams()
+		chamsEnableBtn.Text = "ENABLE CHAMS"
+		chamsEnableBtn.BackgroundColor3 = P.accent
+		chamsEnableBtn.TextColor3 = P.bg
+		notify("Chams OFF", "info")
+	else
+		startChams()
+		chamsEnableBtn.Text = "DISABLE CHAMS"
+		chamsEnableBtn.BackgroundColor3 = P.red
+		chamsEnableBtn.TextColor3 = Color3.new(1, 1, 1)
+		notify("Chams ON", "success")
+	end
+end))
+
+openChamsMenu = function()
+	if S.chamsMenuOpen then return end
+	S.chamsMenuOpen = true
+	chamsPanel.Visible = true
+	tw(chamsPanel, {Size = UDim2.new(0, 280, 0, 144)}, 0.3)
+end
+
+closeChamsMenu = function()
+	if not S.chamsMenuOpen then return end
+	S.chamsMenuOpen = false
+	tw(chamsPanel, {Size = UDim2.new(0, 280, 0, 0)}, 0.2)
+	task.delay(0.2, function() chamsPanel.Visible = false end)
+end
+
+conn(chamsClose.MouseButton1Click:Connect(function()
+	closeChamsMenu()
+end))
+
+conn(Players.PlayerAdded:Connect(function(plr)
+	conn(plr.CharacterAdded:Connect(function(ch)
+		task.wait(0.3)
+		if S.chamsOn then applyChams(ch) end
+	end))
 end))
 
 -- ╔═══════════════════════════════════════════╗
@@ -2270,62 +2521,112 @@ defCmd("undance", {}, "", "Stop dancing", "Character", function()
 end)
 
 -- ── NPC UTILITY ─────────────────────────────
-defCmd("voidnpc", {"killnpc"}, "", "Aura to void nearby NPCs", "Utility", function()
-	if S.npcKillAura then
-		stopNPCKillAura()
-		notify("NPC Kill Aura OFF", "info")
+defCmd("killnpcs", {"killnpc"}, "", "Kill all NPCs", "Utility", function()
+	local count = killAllNPCs()
+	if count > 0 then
+		notify("Killed " .. count .. " NPCs", "success")
 	else
-		startNPCKillAura()
-		notify("NPC Kill Aura ON", "success")
+		notify("No NPCs found", "warning")
 	end
 end)
 
-defCmd("unvoidnpc", {"unkillnpc"}, "", "Stop NPC void aura", "Utility", function()
-	stopNPCKillAura()
-	notify("NPC Kill Aura OFF", "info")
-end)
-
-defCmd("sitnpc", {}, "", "Make all NPCs sit (Local)", "Utility", function()
+defCmd("delnpcs", {"deletenpcs"}, "", "Send NPCs to the sky", "Utility", function()
 	local count = 0
-	for _, obj in ipairs(workspace:GetDescendants()) do
-		if obj:IsA("Model") and obj ~= getChar() then
-			local hum = obj:FindFirstChildOfClass("Humanoid")
-			if hum and hum.Health > 0 and not Players:GetPlayerFromCharacter(obj) then
-				hum.Sit = true
-				count = count + 1
-			end
+	for _, hum in ipairs(workspace:GetDescendants()) do
+		if hum:IsA("Humanoid") and not Players:GetPlayerFromCharacter(hum.Parent) then
+			hum.HipHeight = 1024
+			count = count + 1
 		end
 	end
-	notify("Sat " .. count .. " NPCs", "success")
+	if count > 0 then
+		notify("Sent " .. count .. " NPCs to the sky", "success")
+	else
+		notify("No NPCs found", "warning")
+	end
 end)
 
-defCmd("dancenpc", {}, "", "Make all NPCs dance (Local)", "Utility", function()
+defCmd("voidnpcs", {}, "", "Send NPCs to the void", "Utility", function()
 	local count = 0
-	for _, obj in ipairs(workspace:GetDescendants()) do
-		if obj:IsA("Model") and obj ~= getChar() then
-			local hum = obj:FindFirstChildOfClass("Humanoid")
-			if hum and hum.Health > 0 and not Players:GetPlayerFromCharacter(obj) then
-				local isR15 = hum.RigType == Enum.HumanoidRigType.R15
-				local idList = isR15 and R15_DANCES or R6_DANCES
-				local chosenId = idList[math.random(1, #idList)]
-				
-				local anim = Instance.new("Animation")
-				anim.AnimationId = "rbxassetid://" .. chosenId
-				
-				local animator = hum:FindFirstChildOfClass("Animator")
-				if not animator then
-					animator = Instance.new("Animator")
-					animator.Parent = hum
-				end
-				
-				local track = animator:LoadAnimation(anim)
-				track.Looped = true
-				track:Play()
-				count = count + 1
-			end
+	for _, hum in ipairs(workspace:GetDescendants()) do
+		if hum:IsA("Humanoid") and not Players:GetPlayerFromCharacter(hum.Parent) then
+			hum.HipHeight = -1024
+			count = count + 1
 		end
 	end
-	notify("Dancing " .. count .. " NPCs", "success")
+	if count > 0 then
+		notify("Voided " .. count .. " NPCs", "success")
+	else
+		notify("No NPCs found", "warning")
+	end
+end)
+
+local tweenTpTool = nil
+defCmd("tweenclicktp", {}, "", "Give TweenClickTP Tool", "Utility", function()
+	if tweenTpTool and tweenTpTool.Parent then tweenTpTool:Destroy() end
+	tweenTpTool = Instance.new("Tool")
+	tweenTpTool.Name = "TweenClickTP"
+	tweenTpTool.RequiresHandle = false
+	tweenTpTool.Parent = LP.Backpack
+	conn(tweenTpTool.Activated:Connect(function()
+		local hrp = getHRP()
+		local hit = Mouse.Hit
+		if hrp and hit then
+			local dist = (hrp.Position - hit.Position).Magnitude
+			local speed = 100 -- studs per second
+			local ti = TweenInfo.new(dist / speed, Enum.EasingStyle.Linear)
+			local tween = TweenService:Create(hrp, ti, {CFrame = CFrame.new(hit.Position + Vector3.new(0, 3, 0))})
+			tween:Play()
+		end
+	end))
+	notify("TweenClickTP tool given", "success")
+end)
+
+defCmd("tweengoto", {"tt"}, "<player>", "Tween to a player", "Utility", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+		local hrp = getHRP()
+		local tHrp = target.Character.HumanoidRootPart
+		if hrp then
+			local dist = (hrp.Position - tHrp.Position).Magnitude
+			local speed = 100 -- studs per second
+			local ti = TweenInfo.new(dist / speed, Enum.EasingStyle.Linear)
+			-- Tween behind the player slightly for a cleaner arrival
+			local tween = TweenService:Create(hrp, ti, {CFrame = tHrp.CFrame * CFrame.new(0, 0, 3)})
+			tween:Play()
+			notify("Tweening to " .. target.DisplayName, "success")
+		end
+	else
+		notify("Player or character not found", "error")
+	end
+end)
+
+defCmd("fakelag", {}, "", "Toggle Fake Lag", "Utility", function()
+	if S.fakeLagOn then
+		stopFakeLag()
+		notify("Fake Lag OFF", "info")
+	else
+		startFakeLag()
+		notify("Fake Lag ON", "success")
+	end
+end)
+
+defCmd("antiafk", {}, "", "Toggle Anti-AFK", "Utility", function()
+	if S.antiAfkOn then
+		stopAntiAfk()
+		notify("Anti-AFK OFF", "info")
+	else
+		startAntiAfk()
+		notify("Anti-AFK ON", "success")
+	end
+end)
+
+defCmd("chams", {}, "", "Open Chams Menu", "Visual", function()
+	if S.chamsMenuOpen then
+		closeChamsMenu()
+	else
+		openChamsMenu()
+	end
 end)
 
 defCmd("invis", {"invisible"}, "[key]", "Toggle FE invis or bind key", "Character", function(a)
@@ -2537,6 +2838,1052 @@ defCmd("coords", {"pos", "position"}, "", "Toggle coordinates", "Utility", funct
 	S.showCoords = not S.showCoords
 	coordsLabel.Visible = S.showCoords
 	notify(S.showCoords and "Coords ON" or "Coords OFF", S.showCoords and "success" or "info")
+end)
+
+defCmd("goto", {"to"}, "<player>", "Teleport to a player", "Utility", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+		local hrp = getHRP()
+		if hrp then
+			hrp.CFrame = target.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+			notify("Teleported to " .. target.DisplayName, "success")
+		end
+	else
+		notify("Player not found", "error")
+	end
+end)
+
+local spectating = nil
+local specConn = nil
+defCmd("spectate", {"view", "spec"}, "<player>", "Spectate a player", "Visual", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if target and target.Character and target.Character:FindFirstChild("Humanoid") then
+		spectating = target
+		Camera.CameraSubject = target.Character.Humanoid
+		if specConn then specConn:Disconnect() end
+		specConn = conn(target.CharacterAdded:Connect(function(c)
+			task.wait(0.5)
+			if spectating == target and c:FindFirstChild("Humanoid") then
+				Camera.CameraSubject = c.Humanoid
+			end
+		end))
+		notify("Spectating " .. target.DisplayName, "success")
+	else
+		notify("Player not found", "error")
+	end
+end)
+
+defCmd("unspectate", {"unview", "unspec"}, "", "Stop spectating", "Visual", function()
+	spectating = nil
+	if specConn then specConn:Disconnect(); specConn = nil end
+	local hum = getHum()
+	if hum then Camera.CameraSubject = hum end
+	notify("Spectate OFF", "info")
+end)
+
+defCmd("rejoin", {"rj"}, "", "Rejoin the server", "Utility", function()
+	notify("Rejoining...", "info")
+	local TeleportService = game:GetService("TeleportService")
+	if #Players:GetPlayers() <= 1 then
+		Players.LocalPlayer:Kick("\nRejoining...")
+		task.wait()
+		TeleportService:Teleport(game.PlaceId, LP)
+	else
+		TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP)
+	end
+end)
+
+defCmd("serverhop", {"hop"}, "", "Hop to a different server", "Utility", function()
+	notify("Hopping servers...", "info")
+	local HttpService = game:GetService("HttpService")
+	local TeleportService = game:GetService("TeleportService")
+	local servers = {}
+	local req = request or http_request or (syn and syn.request)
+	if req then
+		local function fetch(cursor)
+			local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
+			if cursor then url = url .. "&cursor=" .. cursor end
+			local res = req({Url = url, Method = "GET"})
+			if res and res.Body then
+				local data = HttpService:JSONDecode(res.Body)
+				if data and data.data then
+					for _, v in ipairs(data.data) do
+						if v.playing and v.playing < v.maxPlayers - 1 and v.id ~= game.JobId then
+							table.insert(servers, v.id)
+						end
+					end
+					return data.nextPageCursor
+				end
+			end
+			return nil
+		end
+		fetch()
+		if #servers > 0 then
+			local target = servers[math.random(1, #servers)]
+			TeleportService:TeleportToPlaceInstance(game.PlaceId, target, LP)
+		else
+			notify("No servers found", "error")
+		end
+	else
+		notify("Executor does not support HTTP requests", "error")
+	end
+end)
+
+local savedCFrame = nil
+defCmd("savepos", {"sp"}, "", "Save current position", "Utility", function()
+	local hrp = getHRP()
+	if hrp then
+		savedCFrame = hrp.CFrame
+		notify("Position saved", "success")
+	else
+		notify("No character", "error")
+	end
+end)
+
+defCmd("loadpos", {"lp"}, "", "Teleport to saved position", "Utility", function()
+	if not savedCFrame then notify("No position saved", "error"); return end
+	local hrp = getHRP()
+	if hrp then
+		hrp.CFrame = savedCFrame
+		notify("Position loaded", "success")
+	else
+		notify("No character", "error")
+	end
+end)
+
+defCmd("clicktp", {"ctp"}, "", "Give Click Teleport tool", "Utility", function()
+	local tool = LP.Backpack:FindFirstChild("ClickTP") or LP.Character:FindFirstChild("ClickTP")
+	if tool then tool:Destroy() end
+	tool = Instance.new("Tool")
+	tool.Name = "ClickTP"
+	tool.RequiresHandle = false
+	tool.Parent = LP.Backpack
+	conn(tool.Activated:Connect(function()
+		local hrp = getHRP()
+		local hit = Mouse.Hit
+		if hrp and hit then
+			hrp.CFrame = CFrame.new(hit.Position + Vector3.new(0, 3, 0))
+		end
+	end))
+	notify("ClickTP tool given", "success")
+end)
+
+defCmd("dex", {"darkdex"}, "", "Load Dark Dex V3", "Utility", function()
+	notify("Loading Dark Dex...", "info")
+	local load = loadstring or (syn and syn.loadstring)
+	if load then
+		task.defer(function()
+			pcall(function() load(game:HttpGet("https://raw.githubusercontent.com/Babyhamsta/RBLX_Scripts/main/Universal/BypassedDarkDexV3.lua", true))() end)
+		end)
+	else
+		notify("Loadstring not supported", "error")
+	end
+end)
+
+defCmd("iy", {"infiniteyield"}, "", "Load Infinite Yield", "Utility", function()
+	notify("Loading Infinite Yield...", "info")
+	local load = loadstring or (syn and syn.loadstring)
+	if load then
+		task.defer(function()
+			pcall(function() load(game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source"))() end)
+		end)
+	else
+		notify("Loadstring not supported", "error")
+	end
+end)
+
+defCmd("copyjobid", {"jobid"}, "", "Copy server JobId to clipboard", "Utility", function()
+	local setclip = setclipboard or toclipboard or set_clipboard or (Clipboard and Clipboard.set)
+	if setclip then
+		setclip(game.JobId)
+		notify("JobId copied to clipboard", "success")
+	else
+		notify("Clipboard not supported", "error")
+	end
+end)
+
+local dayConn = nil
+defCmd("day", {}, "", "Set time to day locally", "Visual", function()
+	if dayConn then dayConn:Disconnect(); dayConn = nil end
+	local Lighting = game:GetService("Lighting")
+	Lighting.ClockTime = 14
+	dayConn = conn(Lighting:GetPropertyChangedSignal("ClockTime"):Connect(function()
+		Lighting.ClockTime = 14
+	end))
+	notify("Set to Day", "success")
+end)
+
+defCmd("night", {}, "", "Set time to night locally", "Visual", function()
+	if dayConn then dayConn:Disconnect(); dayConn = nil end
+	local Lighting = game:GetService("Lighting")
+	Lighting.ClockTime = 0
+	dayConn = conn(Lighting:GetPropertyChangedSignal("ClockTime"):Connect(function()
+		Lighting.ClockTime = 0
+	end))
+	notify("Set to Night", "success")
+end)
+
+defCmd("nofog", {}, "", "Remove fog locally", "Visual", function()
+	local Lighting = game:GetService("Lighting")
+	Lighting.FogEnd = 100000
+	notify("Fog removed", "success")
+end)
+
+defCmd("tools", {}, "", "Bring all tools in Workspace", "Utility", function()
+	local count = 0
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("Tool") and obj.Parent ~= LP.Character and obj.Parent ~= LP.Backpack then
+			local handle = obj:FindFirstChild("Handle")
+			local hrp = getHRP()
+			if handle and hrp then
+				handle.CFrame = hrp.CFrame
+				count = count + 1
+			end
+		end
+	end
+	notify("Brought " .. count .. " tools", "success")
+end)
+
+defCmd("droptools", {}, "", "Drop all tools", "Utility", function()
+	for _, tool in ipairs(LP.Backpack:GetChildren()) do
+		if tool:IsA("Tool") then tool.Parent = LP.Character end
+	end
+	task.wait(0.1)
+	for _, tool in ipairs(LP.Character:GetChildren()) do
+		if tool:IsA("Tool") then tool.Parent = workspace end
+	end
+	notify("Dropped all tools", "success")
+end)
+
+defCmd("btools", {"f3x", "bt"}, "", "Give client-side building tools", "Utility", function()
+	for _, mode in ipairs({"Clone", "Hammer", "Grab"}) do
+		local bin = Instance.new("HopperBin")
+		bin.BinType = Enum.BinType[mode]
+		bin.Parent = LP.Backpack
+	end
+	notify("BTools (HopperBins) given", "success")
+end)
+
+defCmd("chat", {"say"}, "<message>", "Send a message in chat", "Trolling", function(a)
+	if #a == 0 then notify("Provide a message", "error"); return end
+	local msg = table.concat(a, " ")
+	local chatEvent = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+	if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
+		chatEvent.SayMessageRequest:FireServer(msg, "All")
+		notify("Sent message", "success")
+	else
+		notify("Game does not use default chat", "error")
+	end
+end)
+
+local spamming = false
+local spamMsg = ""
+defCmd("spam", {}, "<message>", "Spam a message in chat", "Trolling", function(a)
+	if #a == 0 then notify("Provide a message", "error"); return end
+	local msg = table.concat(a, " ")
+	local chatEvent = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+	if not (chatEvent and chatEvent:FindFirstChild("SayMessageRequest")) then
+		notify("Game does not use default chat", "error")
+		return
+	end
+	spamMsg = msg
+	if spamming then return end
+	spamming = true
+	notify("Spamming started", "success")
+	task.spawn(function()
+		while spamming do
+			chatEvent.SayMessageRequest:FireServer(spamMsg, "All")
+			task.wait(1.5) -- Roblox chat rate limit
+		end
+	end)
+end)
+
+defCmd("unspam", {}, "", "Stop spamming", "Trolling", function()
+	spamming = false
+	notify("Spam stopped", "info")
+end)
+
+local currentSound = nil
+defCmd("music", {"sound", "play"}, "<id>", "Play an audio ID locally", "Visual", function(a)
+	if #a == 0 then notify("Provide an audio ID", "error"); return end
+	local id = a[1]:match("%d+")
+	if not id then notify("Invalid ID", "error"); return end
+	if currentSound then currentSound:Destroy() end
+	currentSound = Instance.new("Sound")
+	currentSound.SoundId = "rbxassetid://" .. id
+	currentSound.Volume = 1
+	currentSound.Looped = true
+	currentSound.Parent = workspace
+	currentSound:Play()
+	notify("Playing sound " .. id, "success")
+end)
+
+defCmd("stopsounds", {"nosounds"}, "", "Stop all local sounds", "Visual", function()
+	if currentSound then currentSound:Destroy(); currentSound = nil end
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("Sound") and obj.IsPlaying then
+			obj:Stop()
+		end
+	end
+	notify("Stopped sounds", "success")
+end)
+
+local timeConn = nil
+defCmd("time", {"timeofday"}, "<time>", "Set local TimeOfDay", "Visual", function(a)
+	if #a == 0 then notify("Provide a time (e.g. 14:00)", "error"); return end
+	if timeConn then timeConn:Disconnect(); timeConn = nil end
+	local Lighting = game:GetService("Lighting")
+	local t = a[1]
+	Lighting.TimeOfDay = t
+	timeConn = conn(Lighting:GetPropertyChangedSignal("TimeOfDay"):Connect(function()
+		Lighting.TimeOfDay = t
+	end))
+	notify("Time set to " .. t, "success")
+end)
+
+local brightConn = nil
+defCmd("brightness", {"bright"}, "<value>", "Set local brightness", "Visual", function(a)
+	if #a == 0 then notify("Provide a value", "error"); return end
+	local v = tonumber(a[1]) or 1
+	if brightConn then brightConn:Disconnect(); brightConn = nil end
+	local Lighting = game:GetService("Lighting")
+	Lighting.Brightness = v
+	brightConn = conn(Lighting:GetPropertyChangedSignal("Brightness"):Connect(function()
+		Lighting.Brightness = v
+	end))
+	notify("Brightness set to " .. v, "success")
+end)
+
+defCmd("gravity", {"grav"}, "<value>", "Set local gravity", "Movement", function(a)
+	if #a == 0 then notify("Provide a value", "error"); return end
+	local v = tonumber(a[1]) or 196.2
+	workspace.Gravity = v
+	notify("Gravity set to " .. v, "success")
+end)
+
+defCmd("ambient", {}, "<r,g,b>", "Set local ambient color", "Visual", function(a)
+	if #a < 1 then notify("Provide r,g,b", "error"); return end
+	local rgbStr = table.concat(a, "")
+	local r, g, b = rgbStr:match("(%d+),(%d+),(%d+)")
+	if not r then notify("Format: r,g,b", "error"); return end
+	game:GetService("Lighting").Ambient = Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
+	notify("Ambient set", "success")
+end)
+
+defCmd("outdoorambient", {}, "<r,g,b>", "Set local outdoor ambient", "Visual", function(a)
+	if #a < 1 then notify("Provide r,g,b", "error"); return end
+	local rgbStr = table.concat(a, "")
+	local r, g, b = rgbStr:match("(%d+),(%d+),(%d+)")
+	if not r then notify("Format: r,g,b", "error"); return end
+	game:GetService("Lighting").OutdoorAmbient = Color3.fromRGB(tonumber(r), tonumber(g), tonumber(b))
+	notify("Outdoor Ambient set", "success")
+end)
+
+defCmd("unlockws", {"unlockworkspace"}, "", "Unlock all parts locally", "Utility", function()
+	local count = 0
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("BasePart") and obj.Locked then
+			obj.Locked = false
+			count = count + 1
+		end
+	end
+	notify("Unlocked " .. count .. " parts", "success")
+end)
+
+defCmd("lockws", {"lockworkspace"}, "", "Lock all parts locally", "Utility", function()
+	local count = 0
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("BasePart") and not obj.Locked then
+			obj.Locked = true
+			count = count + 1
+		end
+	end
+	notify("Locked " .. count .. " parts", "success")
+end)
+
+defCmd("destroytool", {"bdestroy", "deltool"}, "", "Give tool that destroys clicked parts", "Utility", function()
+	local tool = LP.Backpack:FindFirstChild("Destroyer") or LP.Character:FindFirstChild("Destroyer")
+	if tool then tool:Destroy() end
+	tool = Instance.new("Tool")
+	tool.Name = "Destroyer"
+	tool.RequiresHandle = false
+	tool.Parent = LP.Backpack
+	conn(tool.Activated:Connect(function()
+		local target = Mouse.Target
+		if target and not target:IsDescendantOf(LP.Character) then
+			target:Destroy()
+			notify("Destroyed " .. target.Name, "success")
+		end
+	end))
+	notify("Destroy tool given", "success")
+end)
+
+defCmd("hidechat", {"disablechat"}, "", "Hide Roblox Chat GUI", "Utility", function()
+	game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.Chat, false)
+	notify("Chat hidden", "info")
+end)
+
+defCmd("showchat", {"enablechat"}, "", "Show Roblox Chat GUI", "Utility", function()
+	game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.Chat, true)
+	notify("Chat shown", "success")
+end)
+
+defCmd("hidegui", {"disablegui"}, "", "Hide all Roblox CoreGuis", "Utility", function()
+	game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
+	notify("CoreGuis hidden", "info")
+end)
+
+defCmd("showgui", {"enablegui"}, "", "Show all Roblox CoreGuis", "Utility", function()
+	game:GetService("StarterGui"):SetCoreGuiEnabled(Enum.CoreGuiType.All, true)
+	notify("CoreGuis shown", "success")
+end)
+
+defCmd("clearconsole", {"cc"}, "", "Clear DevConsole", "Utility", function()
+	local LogService = game:GetService("LogService")
+	if LogService.Clear then
+		pcall(function() LogService:Clear() end)
+		notify("Console cleared", "success")
+	else
+		notify("LogService:Clear not supported", "error")
+	end
+end)
+
+defCmd("accountage", {"accage", "age"}, "<player>", "Tells the account age of a player", "Utility", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if target then
+		notify(target.DisplayName .. "'s account is " .. target.AccountAge .. " days old.", "info")
+	else
+		notify("Player not found", "error")
+	end
+end)
+
+defCmd("notoolscripts", {"nts"}, "", "Destroy all scripts inside tools", "Utility", function()
+	local count = 0
+	for _, tool in ipairs(LP.Backpack:GetChildren()) do
+		if tool:IsA("Tool") then
+			for _, desc in ipairs(tool:GetDescendants()) do
+				if desc:IsA("LocalScript") or desc:IsA("Script") then
+					desc:Destroy()
+					count = count + 1
+				end
+			end
+		end
+	end
+	for _, tool in ipairs(LP.Character:GetChildren()) do
+		if tool:IsA("Tool") then
+			for _, desc in ipairs(tool:GetDescendants()) do
+				if desc:IsA("LocalScript") or desc:IsA("Script") then
+					desc:Destroy()
+					count = count + 1
+				end
+			end
+		end
+	end
+	notify("Destroyed " .. count .. " scripts in tools", "success")
+end)
+
+defCmd("unanchorparts", {"unanchorp"}, "", "Unanchor all baseparts locally", "Utility", function()
+	local count = 0
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("BasePart") and obj.Anchored and obj.Name ~= "Baseplate" and obj.Name ~= "Terrain" then
+			obj.Anchored = false
+			count = count + 1
+		end
+	end
+	notify("Unanchored " .. count .. " parts", "success")
+end)
+
+defCmd("printremotes", {"remotes"}, "", "Print all RemoteEvents to F9 Console", "Utility", function()
+	local count = 0
+	for _, obj in ipairs(game:GetDescendants()) do
+		if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+			print(obj.ClassName .. ": " .. obj:GetFullName())
+			count = count + 1
+		end
+	end
+	notify("Printed " .. count .. " remotes to console", "success")
+end)
+
+defCmd("invisibleitems", {"invisitems"}, "", "Make all held items invisible", "Visual", function()
+	local count = 0
+	for _, tool in ipairs(LP.Backpack:GetChildren()) do
+		if tool:IsA("Tool") then
+			for _, desc in ipairs(tool:GetDescendants()) do
+				if desc:IsA("BasePart") then
+					desc.Transparency = 1
+					count = count + 1
+				end
+			end
+		end
+	end
+	for _, tool in ipairs(LP.Character:GetChildren()) do
+		if tool:IsA("Tool") then
+			for _, desc in ipairs(tool:GetDescendants()) do
+				if desc:IsA("BasePart") then
+					desc.Transparency = 1
+					count = count + 1
+				end
+			end
+		end
+	end
+	notify("Made " .. count .. " tool parts invisible", "success")
+end)
+
+local state_antikill = false
+local conn_antikill = nil
+defCmd("antikill", {}, "", "Disarms players near you (if unanchored)", "Combat", function()
+	if state_antikill then
+		state_antikill = false
+		if conn_antikill then conn_antikill:Disconnect(); conn_antikill = nil end
+		notify("AntiKill OFF", "info")
+	else
+		state_antikill = true
+		conn_antikill = conn(RunService.Heartbeat:Connect(function()
+			local hrp = getHRP()
+			if hrp then
+				for _, plr in ipairs(Players:GetPlayers()) do
+					if plr ~= LP and plr.Character then
+						local eHrp = plr.Character:FindFirstChild("HumanoidRootPart")
+						if eHrp and (hrp.Position - eHrp.Position).Magnitude < 20 then
+							local grip = plr.Character:FindFirstChild("RightGrip", true)
+							if grip then grip:Destroy() end
+						end
+					end
+				end
+			end
+		end))
+		notify("AntiKill ON", "success")
+	end
+end)
+
+local state_antivoid = false
+local conn_antivoid = nil
+defCmd("antivoid", {}, "", "Teleports you up if you fall into void", "Movement", function()
+	if state_antivoid then
+		state_antivoid = false
+		if conn_antivoid then conn_antivoid:Disconnect(); conn_antivoid = nil end
+		notify("AntiVoid OFF", "info")
+	else
+		state_antivoid = true
+		conn_antivoid = conn(RunService.Heartbeat:Connect(function()
+			local hrp = getHRP()
+			if hrp and hrp.Position.Y < workspace.FallenPartsDestroyHeight + 50 then
+				hrp.CFrame = hrp.CFrame + Vector3.new(0, 500, 0)
+				hrp.Velocity = Vector3.zero
+			end
+		end))
+		notify("AntiVoid ON", "success")
+	end
+end)
+
+defCmd("bambi", {"noob"}, "", "Become a classic noob locally", "Appearance", function()
+	local char = LP.Character
+	if not char then return end
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then
+			if part.Name == "Head" or part.Name == "Left Arm" or part.Name == "Right Arm" then
+				part.BrickColor = BrickColor.new("Bright yellow")
+			elseif part.Name == "Torso" then
+				part.BrickColor = BrickColor.new("Bright blue")
+			elseif part.Name == "Left Leg" or part.Name == "Right Leg" then
+				part.BrickColor = BrickColor.new("Br. yellowish green")
+			end
+		end
+		if part:IsA("Shirt") or part:IsA("Pants") or part:IsA("CharacterMesh") or part:IsA("Accessory") then
+			part:Destroy()
+		end
+	end
+	notify("You are now a noob!", "success")
+end)
+
+defCmd("headless", {}, "", "Remove your head mesh locally", "Appearance", function()
+	local char = LP.Character
+	if char then
+		local head = char:FindFirstChild("Head")
+		if head then
+			for _, m in ipairs(head:GetDescendants()) do
+				if m:IsA("SpecialMesh") or m:IsA("Mesh") then m:Destroy() end
+			end
+			local face = head:FindFirstChild("face") or head:FindFirstChild("Face")
+			if face then face:Destroy() end
+			head.Transparency = 1
+			notify("Headless applied", "success")
+		end
+	end
+end)
+
+defCmd("korblox", {}, "", "Fake Korblox Right Leg locally", "Appearance", function()
+	local char = LP.Character
+	if not char then return end
+	local r15 = char:FindFirstChild("RightUpperLeg")
+	if r15 then
+		for _, v in ipairs({"RightUpperLeg", "RightLowerLeg", "RightFoot"}) do
+			local p = char:FindFirstChild(v)
+			if p then p.Transparency = 1 end
+		end
+	else
+		local r6 = char:FindFirstChild("Right Leg")
+		if r6 then r6.Transparency = 1 end
+	end
+	notify("Korblox applied", "success")
+end)
+
+defCmd("noarms", {}, "", "Make arms invisible locally", "Appearance", function()
+	local char = LP.Character
+	if not char then return end
+	local parts = {"Left Arm", "Right Arm", "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand"}
+	for _, n in ipairs(parts) do
+		local p = char:FindFirstChild(n)
+		if p then p.Transparency = 1 end
+	end
+	notify("Arms hidden", "success")
+end)
+
+defCmd("nolegs", {}, "", "Make legs invisible locally", "Appearance", function()
+	local char = LP.Character
+	if not char then return end
+	local parts = {"Left Leg", "Right Leg", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot"}
+	for _, n in ipairs(parts) do
+		local p = char:FindFirstChild(n)
+		if p then p.Transparency = 1 end
+	end
+	notify("Legs hidden", "success")
+end)
+
+defCmd("sit", {}, "", "Force character to sit", "Character", function()
+	local hum = getHum()
+	if hum then hum.Sit = true; notify("Sat down", "info") end
+end)
+
+defCmd("jumpchar", {}, "", "Force character to jump", "Character", function()
+	local hum = getHum()
+	if hum then hum.Jump = true; notify("Jumped", "info") end
+end)
+
+local state_swim = false
+local conn_swim = nil
+defCmd("swim", {}, "", "Swim through the air", "Movement", function()
+	if state_swim then
+		state_swim = false
+		if conn_swim then conn_swim:Disconnect(); conn_swim = nil end
+		workspace.Gravity = 196.2
+		notify("Swim OFF", "info")
+	else
+		state_swim = true
+		workspace.Gravity = 0
+		local hum = getHum()
+		if hum then hum:ChangeState(Enum.HumanoidStateType.Swimming) end
+		conn_swim = conn(RunService.Heartbeat:Connect(function()
+			local h = getHum()
+			if h and h:GetState() ~= Enum.HumanoidStateType.Swimming then
+				h:ChangeState(Enum.HumanoidStateType.Swimming)
+			end
+		end))
+		notify("Swim ON", "success")
+	end
+end)
+
+local state_spintools = false
+local conn_spintools = nil
+defCmd("spintools", {}, "", "Dropped tools orbit you", "Trolling", function()
+	if state_spintools then
+		state_spintools = false
+		if conn_spintools then conn_spintools:Disconnect(); conn_spintools = nil end
+		notify("SpinTools OFF", "info")
+	else
+		state_spintools = true
+		local rot = 0
+		conn_spintools = conn(RunService.RenderStepped:Connect(function()
+			local hrp = getHRP()
+			if not hrp then return end
+			rot = rot + 2
+			local tools = {}
+			for _, v in ipairs(workspace:GetDescendants()) do
+				if v:IsA("Tool") and v:FindFirstChild("Handle") then
+					table.insert(tools, v)
+				end
+			end
+			if #tools > 0 then
+				local radius = 8
+				local angle = 360 / #tools
+				for i, tool in ipairs(tools) do
+					local handle = tool:FindFirstChild("Handle")
+					if handle then
+						local rad = math.rad(rot + (i * angle))
+						local targetPos = hrp.Position + Vector3.new(math.cos(rad) * radius, 0, math.sin(rad) * radius)
+						handle.CFrame = CFrame.new(targetPos, hrp.Position)
+					end
+				end
+			end
+		end))
+		notify("SpinTools ON", "success")
+	end
+end)
+
+local state_xray = false
+defCmd("xray", {}, "", "Make everything transparent except players", "Visual", function()
+	if state_xray then
+		state_xray = false
+		for _, obj in ipairs(workspace:GetDescendants()) do
+			if obj:IsA("BasePart") and obj:FindFirstChild("_XrayOrigTrans") then
+				obj.Transparency = obj._XrayOrigTrans.Value
+				obj._XrayOrigTrans:Destroy()
+			end
+		end
+		notify("X-Ray OFF", "info")
+	else
+		state_xray = true
+		for _, obj in ipairs(workspace:GetDescendants()) do
+			if obj:IsA("BasePart") and not obj.Parent:FindFirstChild("Humanoid") and obj.Name ~= "HumanoidRootPart" then
+				local val = Instance.new("NumberValue")
+				val.Name = "_XrayOrigTrans"
+				val.Value = obj.Transparency
+				val.Parent = obj
+				obj.Transparency = 0.5
+			end
+		end
+		notify("X-Ray ON", "success")
+	end
+end)
+
+defCmd("tall", {}, "", "Make character tall (R15)", "Appearance", function()
+	local hum = getHum()
+	if hum and hum:FindFirstChild("BodyHeightScale") then
+		hum.BodyHeightScale.Value = 3
+		notify("Tall mode", "success")
+	else
+		notify("R15 only", "warning")
+	end
+end)
+
+defCmd("wide", {"fat"}, "", "Make character wide (R15)", "Appearance", function()
+	local hum = getHum()
+	if hum and hum:FindFirstChild("BodyWidthScale") then
+		hum.BodyWidthScale.Value = 3
+		notify("Wide mode", "success")
+	else
+		notify("R15 only", "warning")
+	end
+end)
+
+local state_stalk = nil
+local conn_stalk = nil
+defCmd("stalk", {"loopgoto"}, "<player>", "Constantly teleport behind a player", "Movement", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if target then
+		state_stalk = target
+		if conn_stalk then conn_stalk:Disconnect() end
+		conn_stalk = conn(RunService.RenderStepped:Connect(function()
+			if state_stalk and state_stalk.Character and state_stalk.Character:FindFirstChild("HumanoidRootPart") then
+				local hrp = getHRP()
+				if hrp then
+					hrp.CFrame = state_stalk.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 4)
+				end
+			end
+		end))
+		notify("Stalking " .. target.DisplayName, "success")
+	else
+		notify("Player not found", "error")
+	end
+end)
+
+defCmd("unstalk", {"unloopgoto"}, "", "Stop stalking", "Movement", function()
+	state_stalk = nil
+	if conn_stalk then conn_stalk:Disconnect(); conn_stalk = nil end
+	notify("Stopped stalking", "info")
+end)
+
+local state_walkto = nil
+local conn_walkto = nil
+defCmd("walkto", {"follow"}, "<player>", "Automatically walk to a player", "Movement", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if target then
+		state_walkto = target
+		if conn_walkto then conn_walkto:Disconnect() end
+		conn_walkto = conn(RunService.Heartbeat:Connect(function()
+			local hum = getHum()
+			if hum and state_walkto and state_walkto.Character and state_walkto.Character:FindFirstChild("HumanoidRootPart") then
+				hum:MoveTo(state_walkto.Character.HumanoidRootPart.Position)
+			end
+		end))
+		notify("Walking to " .. target.DisplayName, "success")
+	else
+		notify("Player not found", "error")
+	end
+end)
+
+defCmd("unwalkto", {"unfollow"}, "", "Stop walking to player", "Movement", function()
+	state_walkto = nil
+	if conn_walkto then conn_walkto:Disconnect(); conn_walkto = nil end
+	notify("Stopped walking", "info")
+end)
+
+defCmd("freefall", {}, "", "Teleport 10000 studs into the sky", "Movement", function()
+	local hrp = getHRP()
+	if hrp then
+		hrp.CFrame = hrp.CFrame + Vector3.new(0, 10000, 0)
+		notify("Freefalling...", "success")
+	else
+		notify("No character", "error")
+	end
+end)
+
+defCmd("superjump", {"highjump"}, "", "Jump 5x higher once", "Movement", function()
+	local hum = getHum()
+	if hum then
+		hum.UseJumpPower = true
+		hum.JumpPower = 250
+		hum.Jump = true
+		task.delay(0.5, function() if hum then hum.JumpPower = 50 end end)
+		notify("Super jump!", "success")
+	end
+end)
+
+defCmd("noface", {}, "", "Remove your face decal locally", "Appearance", function()
+	local char = LP.Character
+	if char and char:FindFirstChild("Head") then
+		local face = char.Head:FindFirstChild("face") or char.Head:FindFirstChild("Face")
+		if face then face:Destroy(); notify("Face removed", "success") end
+	end
+end)
+
+defCmd("firstperson", {"fp"}, "", "Force first person camera", "Visual", function()
+	Camera.CameraType = Enum.CameraType.Custom
+	LP.CameraMode = Enum.CameraMode.LockFirstPerson
+	notify("First person locked", "success")
+end)
+
+defCmd("thirdperson", {"tp"}, "", "Force third person camera", "Visual", function()
+	LP.CameraMode = Enum.CameraMode.Classic
+	notify("Third person allowed", "success")
+end)
+
+local currentBlur = nil
+defCmd("blur", {}, "", "Add blur to screen", "Visual", function()
+	if currentBlur then currentBlur:Destroy() end
+	currentBlur = Instance.new("BlurEffect")
+	currentBlur.Size = 24
+	currentBlur.Parent = game:GetService("Lighting")
+	notify("Blur added", "success")
+end)
+
+defCmd("unblur", {}, "", "Remove screen blur", "Visual", function()
+	if currentBlur then currentBlur:Destroy(); currentBlur = nil end
+	for _, obj in ipairs(game:GetService("Lighting"):GetChildren()) do
+		if obj:IsA("BlurEffect") then obj:Destroy() end
+	end
+	notify("Blur removed", "success")
+end)
+
+local state_copychat = nil
+local conn_copychat = nil
+defCmd("copychat", {}, "<player>", "Copy everything a player says", "Trolling", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if target then
+		state_copychat = target
+		if conn_copychat then conn_copychat:Disconnect() end
+		conn_copychat = conn(target.Chatted:Connect(function(msg)
+			if state_copychat == target then
+				local chatEvent = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+				if chatEvent and chatEvent:FindFirstChild("SayMessageRequest") then
+					chatEvent.SayMessageRequest:FireServer(msg, "All")
+				end
+			end
+		end))
+		notify("Copying " .. target.DisplayName .. "'s chat", "success")
+	else
+		notify("Player not found", "error")
+	end
+end)
+
+defCmd("uncopychat", {}, "", "Stop copying chat", "Trolling", function()
+	state_copychat = nil
+	if conn_copychat then conn_copychat:Disconnect(); conn_copychat = nil end
+	notify("Stopped copying chat", "info")
+end)
+
+defCmd("fpscap", {"setfpscap"}, "<value>", "Set local FPS cap (if supported)", "Utility", function(a)
+	if #a == 0 then notify("Provide an FPS cap", "error"); return end
+	local v = tonumber(a[1]) or 60
+	if setfpscap then
+		setfpscap(v)
+		notify("FPS cap set to " .. v, "success")
+	else
+		notify("setfpscap not supported", "error")
+	end
+end)
+
+defCmd("noshadows", {}, "", "Disable GlobalShadows locally", "Visual", function()
+	game:GetService("Lighting").GlobalShadows = false
+	notify("Shadows disabled", "success")
+end)
+
+defCmd("shadows", {}, "", "Enable GlobalShadows locally", "Visual", function()
+	game:GetService("Lighting").GlobalShadows = true
+	notify("Shadows enabled", "success")
+end)
+
+defCmd("realsky", {"clearsky"}, "", "Remove custom Skyboxes", "Visual", function()
+	local count = 0
+	for _, obj in ipairs(game:GetService("Lighting"):GetChildren()) do
+		if obj:IsA("Sky") then
+			obj:Destroy()
+			count = count + 1
+		end
+	end
+	notify("Removed " .. count .. " custom skies", "success")
+end)
+
+local state_hideplayers = false
+local conn_hideplayers = nil
+defCmd("hideplayers", {}, "", "Make all other players invisible locally", "Visual", function()
+	if state_hideplayers then
+		state_hideplayers = false
+		if conn_hideplayers then conn_hideplayers:Disconnect(); conn_hideplayers = nil end
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LP and plr.Character then
+				for _, desc in ipairs(plr.Character:GetDescendants()) do
+					if desc:IsA("BasePart") or desc:IsA("Decal") then
+						if desc:FindFirstChild("_HidePlayersTrans") then
+							desc.Transparency = desc._HidePlayersTrans.Value
+							desc._HidePlayersTrans:Destroy()
+						end
+					end
+				end
+			end
+		end
+		notify("Showed players", "info")
+	else
+		state_hideplayers = true
+		conn_hideplayers = conn(RunService.Heartbeat:Connect(function()
+			for _, plr in ipairs(Players:GetPlayers()) do
+				if plr ~= LP and plr.Character then
+					for _, desc in ipairs(plr.Character:GetDescendants()) do
+						if (desc:IsA("BasePart") or desc:IsA("Decal")) and desc.Transparency < 1 then
+							if not desc:FindFirstChild("_HidePlayersTrans") then
+								local v = Instance.new("NumberValue")
+								v.Name = "_HidePlayersTrans"
+								v.Value = desc.Transparency
+								v.Parent = desc
+							end
+							desc.Transparency = 1
+						end
+					end
+				end
+			end
+		end))
+		notify("Hiding players", "success")
+	end
+end)
+
+defCmd("showplayers", {}, "", "Show all players", "Visual", function()
+	if state_hideplayers then
+		execCmd("hideplayers")
+	else
+		notify("Players already shown", "info")
+	end
+end)
+
+defCmd("neon", {"neonmap"}, "", "Turn entire map into Neon", "Visual", function()
+	local count = 0
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("BasePart") and not obj.Parent:FindFirstChild("Humanoid") then
+			if not obj:FindFirstChild("_OrigMat") then
+				local v = Instance.new("StringValue")
+				v.Name = "_OrigMat"
+				v.Value = obj.Material.Name
+				v.Parent = obj
+			end
+			obj.Material = Enum.Material.Neon
+			count = count + 1
+		end
+	end
+	notify("Turned " .. count .. " parts to Neon", "success")
+end)
+
+defCmd("smoothplastic", {"smoothmap", "plasticmap"}, "", "Turn map into SmoothPlastic", "Visual", function()
+	local count = 0
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("BasePart") and not obj.Parent:FindFirstChild("Humanoid") then
+			if not obj:FindFirstChild("_OrigMat") then
+				local v = Instance.new("StringValue")
+				v.Name = "_OrigMat"
+				v.Value = obj.Material.Name
+				v.Parent = obj
+			end
+			obj.Material = Enum.Material.SmoothPlastic
+			count = count + 1
+		end
+	end
+	notify("Turned " .. count .. " parts to SmoothPlastic", "success")
+end)
+
+defCmd("revertmap", {"unneon", "unplastic"}, "", "Revert map materials", "Visual", function()
+	local count = 0
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("BasePart") and obj:FindFirstChild("_OrigMat") then
+			pcall(function() obj.Material = Enum.Material[obj._OrigMat.Value] end)
+			obj._OrigMat:Destroy()
+			count = count + 1
+		end
+	end
+	notify("Reverted " .. count .. " part materials", "success")
+end)
+
+defCmd("trip", {}, "", "Force character to trip", "Character", function()
+	local hum = getHum()
+	if hum then
+		hum:ChangeState(Enum.HumanoidStateType.FallingDown)
+		notify("Tripped", "success")
+	end
+end)
+
+local state_spasm = false
+local conn_spasm = nil
+defCmd("spasm", {}, "", "Character has a seizure", "Character", function()
+	if state_spasm then
+		state_spasm = false
+		if conn_spasm then conn_spasm:Disconnect(); conn_spasm = nil end
+		notify("Spasm OFF", "info")
+	else
+		state_spasm = true
+		conn_spasm = conn(RunService.Heartbeat:Connect(function()
+			local hum = getHum()
+			if hum then
+				hum:ChangeState(Enum.HumanoidStateType.Physics)
+				task.wait()
+				hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+			end
+		end))
+		notify("Spasm ON", "success")
+	end
+end)
+
+defCmd("blockhats", {}, "", "Remove meshes from hats locally", "Appearance", function()
+	local char = LP.Character
+	if char then
+		local count = 0
+		for _, acc in ipairs(char:GetChildren()) do
+			if acc:IsA("Accessory") or acc:IsA("Hat") then
+				local handle = acc:FindFirstChild("Handle")
+				if handle then
+					for _, m in ipairs(handle:GetDescendants()) do
+						if m:IsA("SpecialMesh") or m:IsA("Mesh") then
+							m:Destroy()
+							count = count + 1
+						end
+					end
+				end
+			end
+		end
+		notify("Blocked " .. count .. " hats", "success")
+	end
 end)
 
 -- ╔═══════════════════════════════════════════╗
@@ -2849,6 +4196,18 @@ conn(UIS.InputBegan:Connect(function(inp, gp)
 	end
 end))
 
+conn(UIS.InputBegan:Connect(function(inp, gp)
+	if gp then return end
+	if S.chamsWaitingKey then return end
+	if inp.KeyCode == S.chamsMenuKey then
+		if S.chamsMenuOpen then
+			closeChamsMenu()
+		else
+			openChamsMenu()
+		end
+	end
+end))
+
 -- true invis hotkey
 conn(UIS.InputBegan:Connect(function(inp, gp)
 	if gp then return end
@@ -2936,7 +4295,7 @@ conn(LP.CharacterAdded:Connect(function(char)
 	stopReach()
 	stopHitbox()
 	stopDance()
-	stopNPCKillAura()
+
 	S.trueInvisOn = false
 	S.origTransp = {}
 
@@ -2967,7 +4326,26 @@ _G._AdminCleanup = function()
 	stopReach()
 	stopHitbox()
 	stopDance()
-	stopNPCKillAura()
+	stopFakeLag()
+	stopAntiAfk()
+	stopChams()
+	if tweenTpTool and tweenTpTool.Parent then tweenTpTool:Destroy() end
+	if dayConn then dayConn:Disconnect() end
+	if specConn then specConn:Disconnect() end
+	spamming = false
+	if currentSound then currentSound:Destroy() end
+	if timeConn then timeConn:Disconnect() end
+	if brightConn then brightConn:Disconnect() end
+	if conn_antikill then conn_antikill:Disconnect() end
+	if conn_antivoid then conn_antivoid:Disconnect() end
+	if conn_swim then conn_swim:Disconnect() end
+	if conn_spintools then conn_spintools:Disconnect() end
+	if conn_stalk then conn_stalk:Disconnect() end
+	if conn_walkto then conn_walkto:Disconnect() end
+	if conn_copychat then conn_copychat:Disconnect() end
+	if currentBlur then currentBlur:Destroy() end
+	if conn_hideplayers then conn_hideplayers:Disconnect() end
+	if conn_spasm then conn_spasm:Disconnect() end
 	if S.trueInvisOn then toggleFEInvis() end
 	clearESP()
 	clearTeamESP()
