@@ -132,6 +132,12 @@ local S = {
 	trueInvisOn      = false,
 	trueInvisKey     = nil,
 	trueInvisConn    = nil,
+
+	dancing          = false,
+	danceTrack       = nil,
+
+	npcKillAura      = false,
+	npcKillConn      = nil,
 }
 
 -- forward declarations for functions needed across sections
@@ -1063,6 +1069,86 @@ end
 local function stopGod()
 	S.godmode = false
 	if S.godConn then S.godConn:Disconnect(); S.godConn = nil end
+end
+
+-- ── DANCE ───────────────────────────────────
+local R15_DANCES = {507771019, 507771955, 507772104, 507770677}
+local R6_DANCES = {182435998, 182436842, 182436935, 12902333}
+
+local function stopDance()
+	S.dancing = false
+	if S.danceTrack then
+		S.danceTrack:Stop()
+		S.danceTrack = nil
+	end
+end
+
+local function startDance()
+	local char = getChar()
+	local hum = getHum()
+	if not char or not hum then return false end
+	
+	if S.dancing then
+		stopDance()
+		return false
+	end
+	
+	stopDance()
+	S.dancing = true
+	
+	local isR15 = hum.RigType == Enum.HumanoidRigType.R15
+	local idList = isR15 and R15_DANCES or R6_DANCES
+	local chosenId = idList[math.random(1, #idList)]
+	
+	local anim = Instance.new("Animation")
+	anim.AnimationId = "rbxassetid://" .. chosenId
+	
+	local animator = hum:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Parent = hum
+	end
+	
+	S.danceTrack = animator:LoadAnimation(anim)
+	S.danceTrack.Looped = true
+	S.danceTrack:Play()
+	
+	return true
+end
+
+-- ── NPC CONTROLS ────────────────────────────
+local function stopNPCKillAura()
+	S.npcKillAura = false
+	if S.npcKillConn then
+		S.npcKillConn:Disconnect()
+		S.npcKillConn = nil
+	end
+end
+
+local function startNPCKillAura()
+	stopNPCKillAura()
+	S.npcKillAura = true
+	S.npcKillConn = conn(RunService.Heartbeat:Connect(function()
+		local hrp = getHRP()
+		if not hrp then return end
+		
+		for _, obj in ipairs(workspace:GetDescendants()) do
+			if obj:IsA("Model") and obj ~= getChar() then
+				local hum = obj:FindFirstChildOfClass("Humanoid")
+				local root = obj:FindFirstChild("HumanoidRootPart") or obj:FindFirstChild("Torso") or obj:FindFirstChild("UpperTorso")
+				
+				if hum and root and hum.Health > 0 then
+					if not Players:GetPlayerFromCharacter(obj) then
+						local dist = (hrp.Position - root.Position).Magnitude
+						if dist < 25 then
+							root.CFrame = CFrame.new(root.Position.X, -50000, root.Position.Z)
+							root.Velocity = Vector3.new(0, -10000, 0)
+						end
+					end
+				end
+			end
+		end
+	end))
 end
 
 local function startGod()
@@ -2170,6 +2256,78 @@ defCmd("sit", {}, "", "Toggle sit", "Character", function()
 	end
 end)
 
+defCmd("dance", {}, "", "Play random R6/R15 emote", "Character", function()
+	if startDance() then
+		notify("Dancing!", "success")
+	else
+		notify("Dance stopped", "info")
+	end
+end)
+
+defCmd("undance", {}, "", "Stop dancing", "Character", function()
+	stopDance()
+	notify("Dance stopped", "info")
+end)
+
+-- ── NPC UTILITY ─────────────────────────────
+defCmd("voidnpc", {"killnpc"}, "", "Aura to void nearby NPCs", "Utility", function()
+	if S.npcKillAura then
+		stopNPCKillAura()
+		notify("NPC Kill Aura OFF", "info")
+	else
+		startNPCKillAura()
+		notify("NPC Kill Aura ON", "success")
+	end
+end)
+
+defCmd("unvoidnpc", {"unkillnpc"}, "", "Stop NPC void aura", "Utility", function()
+	stopNPCKillAura()
+	notify("NPC Kill Aura OFF", "info")
+end)
+
+defCmd("sitnpc", {}, "", "Make all NPCs sit (Local)", "Utility", function()
+	local count = 0
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("Model") and obj ~= getChar() then
+			local hum = obj:FindFirstChildOfClass("Humanoid")
+			if hum and hum.Health > 0 and not Players:GetPlayerFromCharacter(obj) then
+				hum.Sit = true
+				count = count + 1
+			end
+		end
+	end
+	notify("Sat " .. count .. " NPCs", "success")
+end)
+
+defCmd("dancenpc", {}, "", "Make all NPCs dance (Local)", "Utility", function()
+	local count = 0
+	for _, obj in ipairs(workspace:GetDescendants()) do
+		if obj:IsA("Model") and obj ~= getChar() then
+			local hum = obj:FindFirstChildOfClass("Humanoid")
+			if hum and hum.Health > 0 and not Players:GetPlayerFromCharacter(obj) then
+				local isR15 = hum.RigType == Enum.HumanoidRigType.R15
+				local idList = isR15 and R15_DANCES or R6_DANCES
+				local chosenId = idList[math.random(1, #idList)]
+				
+				local anim = Instance.new("Animation")
+				anim.AnimationId = "rbxassetid://" .. chosenId
+				
+				local animator = hum:FindFirstChildOfClass("Animator")
+				if not animator then
+					animator = Instance.new("Animator")
+					animator.Parent = hum
+				end
+				
+				local track = animator:LoadAnimation(anim)
+				track.Looped = true
+				track:Play()
+				count = count + 1
+			end
+		end
+	end
+	notify("Dancing " .. count .. " NPCs", "success")
+end)
+
 defCmd("invis", {"invisible"}, "[key]", "Toggle FE invis or bind key", "Character", function(a)
 	if #a > 0 then
 		local keyStr = string.upper(a[1])
@@ -2777,6 +2935,8 @@ conn(LP.CharacterAdded:Connect(function(char)
 	stopBang()
 	stopReach()
 	stopHitbox()
+	stopDance()
+	stopNPCKillAura()
 	S.trueInvisOn = false
 	S.origTransp = {}
 
@@ -2806,6 +2966,8 @@ _G._AdminCleanup = function()
 	stopBang()
 	stopReach()
 	stopHitbox()
+	stopDance()
+	stopNPCKillAura()
 	if S.trueInvisOn then toggleFEInvis() end
 	clearESP()
 	clearTeamESP()
