@@ -83,6 +83,9 @@ local S = {
 	espOn         = false,
 	espConns      = {},
 
+	teamEspOn     = false,
+	teamEspConns  = {},
+
 	fullbright    = false,
 	origLighting  = {},
 	hiddenEffects = {},
@@ -93,8 +96,8 @@ local S = {
 	showFps       = false,
 	showCoords    = false,
 
-	customWS      = nil,   -- walkspeed to re-apply on respawn
-	customJH      = nil,   -- jumpheight to re-apply on respawn
+	customWS      = nil,
+	customJH      = nil,
 	accentElements= {},
 	antiflingOn   = false,
 	antiflingConn = nil,
@@ -102,7 +105,38 @@ local S = {
 	freecamConn   = nil,
 	flinging      = false,
 	flingConn     = nil,
+
+	banging       = false,
+	bangConn      = nil,
+
+	reachOn       = false,
+	reachValue    = 15,
+	reachConn     = nil,
+	reachPart     = nil,
+
+	hitboxOn         = false,
+	hitboxHead       = true,
+	hitboxTorso      = true,
+	hitboxLegs       = true,
+	hitboxSize       = 5,
+	hitboxOutline    = true,
+	hitboxMenuKey    = Enum.KeyCode.H,
+	hitboxConn       = nil,
+	hitboxMenuOpen   = false,
+	hitboxOrigSizes  = {},
+	waitingForHitboxKey = false,
+	
+	flingAllOn       = false,
+	flingAllThread   = nil,
+
+	trueInvisOn      = false,
+	trueInvisKey     = nil,
+	trueInvisConn    = nil,
 }
+
+-- forward declarations for functions needed across sections
+local openBar, closeBar
+local openHitboxMenu, closeHitboxMenu
 
 -- ╔═══════════════════════════════════════════╗
 -- ║  PALETTE                                  ║
@@ -145,6 +179,19 @@ local function updateAccent(col)
 			end
 		end
 	end
+	-- update reach ring color
+	if S.reachPart and S.reachPart.Parent then
+		S.reachPart.Color = col
+	end
+	-- update hitbox outlines
+	if S.hitboxOn then
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LP and plr.Character then
+				local hl = plr.Character:FindFirstChild("_AHitboxHL")
+				if hl then hl.OutlineColor = col; hl.FillColor = col end
+			end
+		end
+	end
 end
 
 -- ╔═══════════════════════════════════════════╗
@@ -165,6 +212,15 @@ end
 local function getPlayer(nameStr)
 	if not nameStr then return nil end
 	local lower = string.lower(nameStr)
+	if lower == "random" then
+		local others = {}
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LP then table.insert(others, p) end
+		end
+		if #others > 0 then return others[math.random(1, #others)] end
+		return nil
+	end
+
 	for _, p in ipairs(Players:GetPlayers()) do
 		if string.sub(string.lower(p.Name), 1, #lower) == lower or string.sub(string.lower(p.DisplayName), 1, #lower) == lower then
 			return p
@@ -243,9 +299,9 @@ local function notify(msg, kind)
 	_nid = _nid + 1
 
 	local cols = {success = P.green, error = P.red, warning = P.yellow, info = P.blue}
-	local icons = {success = "✓", error = "✗", warning = "⚠", info = "ℹ"}
+	local icons = {success = "+", error = "x", warning = "!", info = "i"}
 	local accentCol = cols[kind] or P.blue
-	local icon      = icons[kind] or "ℹ"
+	local icon      = icons[kind] or "i"
 
 	local f = make("Frame", {
 		Size = UDim2.new(1, 0, 0, 0),
@@ -379,7 +435,7 @@ bindAccent(pfx, "TextColor3")
 local input = make("TextBox", {
 	Name = "Input",
 	Text = "",
-	PlaceholderText = "type a command…",
+	PlaceholderText = "type a command...",
 	PlaceholderColor3 = P.muted,
 	Font = Enum.Font.GothamMedium, TextSize = 15,
 	TextColor3 = P.text,
@@ -437,10 +493,29 @@ local panelClose = make("TextButton", {
 panelClose.MouseEnter:Connect(function() tw(panelClose, {TextColor3 = P.text}, 0.15) end)
 panelClose.MouseLeave:Connect(function() tw(panelClose, {TextColor3 = P.dim}, 0.15) end)
 
--- scrolling body
+-- search box
+local panelSearch = make("TextBox", {
+	Name = "PanelSearch",
+	Text = "",
+	PlaceholderText = "Search commands...",
+	PlaceholderColor3 = P.muted,
+	Font = Enum.Font.GothamMedium, TextSize = 12,
+	TextColor3 = P.text,
+	BackgroundColor3 = P.bgLight,
+	Size = UDim2.new(1, -28, 0, 28),
+	Position = UDim2.new(0, 14, 0, 44),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	ClearTextOnFocus = false,
+	Parent = panel,
+})
+corner(panelSearch, 6)
+bindAccent(stroke(panelSearch, P.accent, 1, 0.5), "Color")
+pad(panelSearch, 0, 0, 8, 8)
+
+-- scrolling body (shifted down to make room for search)
 local panelScroll = make("ScrollingFrame", {
-	Size = UDim2.new(1, -2, 1, -48),
-	Position = UDim2.new(0, 0, 0, 46),
+	Size = UDim2.new(1, -2, 1, -80),
+	Position = UDim2.new(0, 0, 0, 78),
 	BackgroundTransparency = 1,
 	ScrollBarThickness = 3,
 	BorderSizePixel = 0,
@@ -458,6 +533,10 @@ local listLayout = make("UIListLayout", {
 listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
 	panelScroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 24)
 end)
+
+-- tables for search filtering
+local _cmdPanelRows = {}
+local _cmdCatHeaders = {}
 
 -- ╔═══════════════════════════════════════════╗
 -- ║  INFO LABELS  (FPS / Coords)              ║
@@ -495,7 +574,7 @@ local coordsLabel = make("TextLabel", {
 -- ╚═══════════════════════════════════════════╝
 local setPanel = make("Frame", {
 	Name = "SettingsPanel",
-	Size = UDim2.new(0, 260, 0, 0), -- starts hidden
+	Size = UDim2.new(0, 260, 0, 0),
 	Position = UDim2.new(0.5, 0, 0.5, 0),
 	AnchorPoint = Vector2.new(0.5, 0.5),
 	BackgroundColor3 = P.bg,
@@ -613,7 +692,7 @@ local function startFly()
 	local hum = getHum()
 	if not hrp or not hum then return false end
 
-	stopFly() -- clean slate
+	stopFly()
 
 	local bv = Instance.new("BodyVelocity")
 	bv.Name = "_AdminBV"
@@ -674,7 +753,7 @@ local function startCFly()
 	if not hrp or not hum then return false end
 
 	stopCFly()
-	stopFly() -- conflict
+	stopFly()
 
 	S.cflying = true
 	hum.PlatformStand = true
@@ -802,6 +881,12 @@ local function startFreecam()
 end
 
 -- ── FLING ───────────────────────────────────
+local _flingOldPos = nil
+local function stopFlingAll()
+	S.flingAllOn = false
+	if S.flingAllThread then task.cancel(S.flingAllThread); S.flingAllThread = nil end
+end
+
 local function stopFling()
 	S.flinging = false
 	if S.flingConn then S.flingConn:Disconnect(); S.flingConn = nil end
@@ -813,15 +898,15 @@ local function stopFling()
 	end
 end
 
-local function startFling(target)
+local function startFling(target, duration, isAll)
 	local hrp = getHRP()
 	if not hrp then return end
-	if not target or not target.Character then return end
+	if not target then return end
 	
 	stopFling()
 	S.flinging = true
 	
-	local oldPos = hrp.CFrame
+	if not isAll then _flingOldPos = hrp.CFrame end
 	
 	local bav = Instance.new("BodyAngularVelocity")
 	bav.Name = "_AdminFlingBAV"
@@ -832,8 +917,9 @@ local function startFling(target)
 	local t = 0
 	S.flingConn = conn(RunService.Heartbeat:Connect(function(dt)
 		if not S.flinging then return end
+		if not target.Character then return end
 		local targetHrp = target.Character:FindFirstChild("HumanoidRootPart")
-		if not targetHrp then stopFling(); return end
+		if not targetHrp then return end
 		
 		t = t + dt * 30
 		local offset = Vector3.new(math.sin(t) * 2, math.cos(t) * 2, math.sin(t*0.5) * 2)
@@ -842,13 +928,77 @@ local function startFling(target)
 		hrp.CFrame = CFrame.new(targetHrp.Position + offset)
 	end))
 	
-	task.delay(4, function()
+	task.delay(duration or 4, function()
 		if S.flinging then
 			stopFling()
-			if hrp then hrp.CFrame = oldPos end
-			notify("Fling attempt ended", "info")
+			if not isAll then
+				if hrp and _flingOldPos then hrp.CFrame = _flingOldPos; _flingOldPos = nil end
+				notify("Fling attempt ended", "info")
+			end
 		end
 	end)
+end
+
+local function startFlingAll()
+	stopFlingAll()
+	S.flingAllOn = true
+	local hrp = getHRP()
+	if hrp then _flingOldPos = hrp.CFrame end
+	
+	S.flingAllThread = task.spawn(function()
+		while S.flingAllOn do
+			local targets = {}
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p ~= LP then table.insert(targets, p) end
+			end
+			
+			if #targets == 0 then
+				task.wait(1)
+			else
+				for _, target in ipairs(targets) do
+					if not S.flingAllOn then break end
+					if target and target.Parent then
+						startFling(target, 1.5, true)
+						task.wait(1.5)
+					end
+				end
+			end
+		end
+	end)
+end
+
+-- ── BANG (TROLL) ────────────────────────────
+local function stopBang()
+	S.banging = false
+	if S.bangConn then S.bangConn:Disconnect(); S.bangConn = nil end
+	local hum = getHum()
+	if hum then hum.PlatformStand = false end
+end
+
+local function startBang(target)
+	local hrp = getHRP()
+	local hum = getHum()
+	if not hrp or not hum then return end
+	if not target or not target.Character then return end
+
+	stopBang()
+	S.banging = true
+	hum.PlatformStand = true
+
+	local t = 0
+	S.bangConn = conn(RunService.Heartbeat:Connect(function(dt)
+		if not S.banging then return end
+		if not hrp or not hrp.Parent then stopBang(); return end
+		local tChar = target.Character
+		if not tChar then stopBang(); notify("Target left", "warning"); return end
+		local targetHrp = tChar:FindFirstChild("HumanoidRootPart")
+		if not targetHrp then stopBang(); notify("Target respawning", "warning"); return end
+
+		t = t + dt * 12
+		local bobZ = math.sin(t) * 0.8
+		local behindOffset = CFrame.new(0, 0, 1.2 + bobZ)
+		hrp.CFrame = targetHrp.CFrame * behindOffset
+	end))
 end
 
 -- ── ANTIFLING ───────────────────────────────
@@ -925,25 +1075,57 @@ local function startGod()
 end
 
 -- ── INVISIBILITY ────────────────────────────
-local function setInvis(on)
+local function toggleFEInvis()
+	S.trueInvisOn = not S.trueInvisOn
 	local char = getChar()
 	if not char then return end
 
-	if on then
-		S.invisible = true
+	if S.trueInvisOn then
 		S.origTransp = {}
 		for _, p in ipairs(char:GetDescendants()) do
-			if p:IsA("BasePart") or p:IsA("Decal") or p:IsA("Texture") then
+			if p:IsA("BasePart") and p.Transparency == 0 then
 				S.origTransp[p] = p.Transparency
-				p.Transparency = 1
+				p.Transparency = 0.5
 			end
 		end
+		
+		if S.trueInvisConn then S.trueInvisConn:Disconnect() end
+		
+		S.trueInvisConn = conn(RunService.Heartbeat:Connect(function()
+			if not S.trueInvisOn then return end
+			local hrp = getHRP()
+			local hum = getHum()
+			if not hrp or not hum then return end
+			
+			local origCFrame = hrp.CFrame
+			local origCamOffset = hum.CameraOffset
+			local fakeCFrame = origCFrame * CFrame.new(0, -200000, 0)
+			
+			local posOffset = fakeCFrame:ToObjectSpace(CFrame.new(origCFrame.Position)).Position
+			
+			hrp.CFrame = fakeCFrame
+			hum.CameraOffset = posOffset
+			
+			RunService.RenderStepped:Wait()
+			
+			local currentHum = getHum()
+			if not currentHum then return end
+			hrp.CFrame = origCFrame
+			currentHum.CameraOffset = origCamOffset
+		end))
+		notify("Invisible", "success")
 	else
-		S.invisible = false
-		for p, t in pairs(S.origTransp) do
-			if p and p.Parent then p.Transparency = t end
+		for p, orig in pairs(S.origTransp) do
+			if p and p.Parent then p.Transparency = orig end
 		end
 		S.origTransp = {}
+		if S.trueInvisConn then
+			S.trueInvisConn:Disconnect()
+			S.trueInvisConn = nil
+		end
+		local hum = getHum()
+		if hum then hum.CameraOffset = Vector3.zero end
+		notify("Visible", "info")
 	end
 end
 
@@ -968,7 +1150,6 @@ local function espPlayer(plr)
 	local function onChar(char)
 		task.wait(0.3)
 		if not S.espOn or not char or not char.Parent then return end
-		-- remove old
 		local old = char:FindFirstChild("_AESP")
 		if old then old:Destroy() end
 		local oldb = char:FindFirstChild("_AESPName")
@@ -1019,6 +1200,100 @@ local function enableESP()
 		if S.espOn then espPlayer(plr) end
 	end)
 	table.insert(S.espConns, c)
+end
+
+-- ── TEAM ESP ────────────────────────────────
+local function clearTeamESP()
+	S.teamEspOn = false
+	for _, c in ipairs(S.teamEspConns) do pcall(function() c:Disconnect() end) end
+	S.teamEspConns = {}
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LP and plr.Character then
+			local h = plr.Character:FindFirstChild("_ATeamESP")
+			local b = plr.Character:FindFirstChild("_ATeamESPName")
+			if h then h:Destroy() end
+			if b then b:Destroy() end
+		end
+	end
+end
+
+local function teamEspPlayer(plr)
+	if plr == LP then return end
+
+	local function onChar(char)
+		task.wait(0.3)
+		if not S.teamEspOn or not char or not char.Parent then return end
+		local old = char:FindFirstChild("_ATeamESP")
+		if old then old:Destroy() end
+		local oldb = char:FindFirstChild("_ATeamESPName")
+		if oldb then oldb:Destroy() end
+
+		-- determine team color
+		local teamCol = Color3.new(1, 1, 1)
+		local teamName = "No Team"
+		if plr.Team then
+			teamCol = plr.TeamColor.Color
+			teamName = plr.Team.Name
+		end
+
+		local hl = Instance.new("Highlight")
+		hl.Name = "_ATeamESP"
+		hl.FillColor = teamCol
+		hl.FillTransparency = 0.55
+		hl.OutlineColor = teamCol
+		hl.OutlineTransparency = 0.2
+		hl.Parent = char
+
+		local head = char:FindFirstChild("Head")
+		if head then
+			local bb = Instance.new("BillboardGui")
+			bb.Name = "_ATeamESPName"
+			bb.Size = UDim2.new(0, 160, 0, 40)
+			bb.StudsOffset = Vector3.new(0, 2.8, 0)
+			bb.AlwaysOnTop = true
+			bb.Adornee = head
+			bb.Parent = char
+
+			local nameLabel = Instance.new("TextLabel")
+			nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
+			nameLabel.BackgroundTransparency = 1
+			nameLabel.Text = plr.DisplayName
+			nameLabel.TextColor3 = Color3.new(1, 1, 1)
+			nameLabel.TextStrokeTransparency = 0.3
+			nameLabel.Font = Enum.Font.GothamBold
+			nameLabel.TextSize = 13
+			nameLabel.TextScaled = false
+			nameLabel.Parent = bb
+
+			local teamLabel = Instance.new("TextLabel")
+			teamLabel.Size = UDim2.new(1, 0, 0.5, 0)
+			teamLabel.Position = UDim2.new(0, 0, 0.5, 0)
+			teamLabel.BackgroundTransparency = 1
+			teamLabel.Text = "[" .. teamName .. "]"
+			teamLabel.TextColor3 = teamCol
+			teamLabel.TextStrokeTransparency = 0.4
+			teamLabel.Font = Enum.Font.GothamMedium
+			teamLabel.TextSize = 11
+			teamLabel.TextScaled = false
+			teamLabel.Parent = bb
+		end
+	end
+
+	if plr.Character then onChar(plr.Character) end
+	local c = plr.CharacterAdded:Connect(function(ch)
+		if S.teamEspOn then onChar(ch) end
+	end)
+	table.insert(S.teamEspConns, c)
+end
+
+local function enableTeamESP()
+	clearTeamESP()
+	S.teamEspOn = true
+	for _, plr in ipairs(Players:GetPlayers()) do teamEspPlayer(plr) end
+	local c = Players.PlayerAdded:Connect(function(plr)
+		if S.teamEspOn then teamEspPlayer(plr) end
+	end)
+	table.insert(S.teamEspConns, c)
 end
 
 -- ── FULLBRIGHT ──────────────────────────────
@@ -1105,11 +1380,529 @@ local function setScale(s)
 	return ok
 end
 
+-- ── REACH ───────────────────────────────────
+local function stopReach()
+	S.reachOn = false
+	if S.reachConn then S.reachConn:Disconnect(); S.reachConn = nil end
+	if S.reachPart and S.reachPart.Parent then S.reachPart:Destroy() end
+	S.reachPart = nil
+	-- restore any modified tool handles
+	local char = getChar()
+	if char then
+		for _, tool in ipairs(char:GetChildren()) do
+			if tool:IsA("Tool") then
+				local handle = tool:FindFirstChild("Handle")
+				if handle then
+					local origSize = handle:GetAttribute("_AdminOrigSize")
+					if origSize then
+						handle.Size = origSize
+						handle.Transparency = handle:GetAttribute("_AdminOrigTransp") or 0
+						handle:SetAttribute("_AdminOrigSize", nil)
+						handle:SetAttribute("_AdminOrigTransp", nil)
+					end
+				end
+			end
+		end
+	end
+end
+
+local function startReach()
+	local char = getChar()
+	if not char then 
+		notify("No character", "error")
+		return false
+	end
+
+	-- Check if a tool is currently equipped
+	local hasTool = false
+	for _, tool in ipairs(char:GetChildren()) do
+		if tool:IsA("Tool") then
+			hasTool = true
+			break
+		end
+	end
+
+	if not hasTool then
+		notify("Equip a tool first!", "error")
+		return false
+	end
+
+	stopReach()
+	S.reachOn = true
+
+	-- create the rectangle outline showing reach range
+	local rect = Instance.new("Part")
+	rect.Name = "_AdminReachRect"
+	rect.Shape = Enum.PartType.Block
+	rect.Size = Vector3.new(4, 0.2, S.reachValue)
+	rect.Transparency = 0.5
+	rect.Color = P.accent
+	rect.Material = Enum.Material.Neon
+	rect.CanCollide = false
+	rect.CanQuery = false
+	rect.Anchored = true
+	rect.Parent = workspace
+	S.reachPart = rect
+
+	S.reachConn = conn(RunService.Heartbeat:Connect(function()
+		if not S.reachOn then return end
+		local hrp = getHRP()
+		if not hrp or not hrp.Parent then return end
+
+		-- position the rectangle in front of the character's feet
+		if S.reachPart and S.reachPart.Parent then
+			S.reachPart.Size = Vector3.new(4, 0.2, S.reachValue)
+			S.reachPart.CFrame = hrp.CFrame * CFrame.new(0, -2.5, -S.reachValue / 2)
+			S.reachPart.Color = P.accent
+		end
+
+		-- extend all equipped tool handles
+		local charObj = getChar()
+		if charObj then
+			local foundTool = false
+			for _, tool in ipairs(charObj:GetChildren()) do
+				if tool:IsA("Tool") then
+					foundTool = true
+					local handle = tool:FindFirstChild("Handle")
+					if handle then
+						-- save original size on first touch
+						if not handle:GetAttribute("_AdminOrigSize") then
+							handle:SetAttribute("_AdminOrigSize", handle.Size)
+							handle:SetAttribute("_AdminOrigTransp", handle.Transparency)
+						end
+						handle.Size = Vector3.new(1, 1, S.reachValue)
+						handle.Transparency = 1
+						handle.Massless = true
+					end
+				end
+			end
+			-- hide visualizer if no tool is equipped
+			if S.reachPart and S.reachPart.Parent then
+				S.reachPart.Transparency = foundTool and 0.5 or 1
+			end
+		end
+	end))
+	return true
+end
+
+-- ── HITBOX EXPANDER ─────────────────────────
+local HITBOX_HEAD_PARTS  = {"Head"}
+local HITBOX_TORSO_PARTS = {"Torso", "UpperTorso", "LowerTorso"}
+local HITBOX_LEG_PARTS   = {"Left Leg", "Right Leg", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot"}
+
+local function stopHitbox()
+	S.hitboxOn = false
+	if S.hitboxConn then S.hitboxConn:Disconnect(); S.hitboxConn = nil end
+	-- restore all original sizes
+	for part, origSize in pairs(S.hitboxOrigSizes) do
+		if part and part.Parent then
+			part.Size = origSize
+		end
+	end
+	S.hitboxOrigSizes = {}
+	-- remove highlights
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LP and plr.Character then
+			local hl = plr.Character:FindFirstChild("_AHitboxHL")
+			if hl then hl:Destroy() end
+		end
+	end
+end
+
+local function getHitboxPartNames()
+	local parts = {}
+	if S.hitboxHead then
+		for _, n in ipairs(HITBOX_HEAD_PARTS) do table.insert(parts, n) end
+	end
+	if S.hitboxTorso then
+		for _, n in ipairs(HITBOX_TORSO_PARTS) do table.insert(parts, n) end
+	end
+	if S.hitboxLegs then
+		for _, n in ipairs(HITBOX_LEG_PARTS) do table.insert(parts, n) end
+	end
+	return parts
+end
+
+local function startHitbox()
+	stopHitbox()
+	S.hitboxOn = true
+
+	S.hitboxConn = conn(RunService.Heartbeat:Connect(function()
+		if not S.hitboxOn then return end
+		local targetParts = getHitboxPartNames()
+
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LP and plr.Character then
+				local char = plr.Character
+
+				-- apply size expansion
+				for _, partName in ipairs(targetParts) do
+					local part = char:FindFirstChild(partName)
+					if part and part:IsA("BasePart") then
+						if not S.hitboxOrigSizes[part] then
+							S.hitboxOrigSizes[part] = part.Size
+						end
+						local orig = S.hitboxOrigSizes[part]
+						part.Size = orig * S.hitboxSize
+						part.Transparency = 0.7
+						part.CanCollide = false
+					end
+				end
+
+				-- handle outline highlight
+				if S.hitboxOutline then
+					if not char:FindFirstChild("_AHitboxHL") then
+						local hl = Instance.new("Highlight")
+						hl.Name = "_AHitboxHL"
+						hl.FillColor = P.accent
+						hl.FillTransparency = 0.85
+						hl.OutlineColor = P.accent
+						hl.OutlineTransparency = 0.3
+						hl.Parent = char
+					end
+				else
+					local hl = char:FindFirstChild("_AHitboxHL")
+					if hl then hl:Destroy() end
+				end
+			end
+		end
+	end))
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  HITBOX EXPANDER MENU                     ║
+-- ╚═══════════════════════════════════════════╝
+local hbPanel = make("Frame", {
+	Name = "HitboxPanel",
+	Size = UDim2.new(0, 280, 0, 0),
+	Position = UDim2.new(0.5, 0, 0.5, 0),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	BackgroundColor3 = P.bg,
+	BackgroundTransparency = 0.04,
+	Visible = false,
+	ClipsDescendants = true,
+	Parent = gui,
+})
+corner(hbPanel, 14)
+bindAccent(stroke(hbPanel, P.border, 1, 0.3), "Color")
+
+-- header
+local hbHeader = make("Frame", {
+	Size = UDim2.new(1, 0, 0, 44),
+	BackgroundTransparency = 1,
+	Parent = hbPanel,
+})
+make("TextLabel", {
+	Text = "Hitbox Expander",
+	Font = Enum.Font.GothamMedium, TextSize = 14,
+	TextColor3 = P.text,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(1, -50, 1, 0),
+	Position = UDim2.new(0, 16, 0, 0),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = hbHeader,
+})
+local hbClose = make("TextButton", {
+	Text = "X",
+	Font = Enum.Font.GothamMedium, TextSize = 14,
+	TextColor3 = P.dim,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0, 44, 0, 44),
+	Position = UDim2.new(1, -44, 0, 0),
+	Parent = hbHeader,
+})
+hbClose.MouseEnter:Connect(function() tw(hbClose, {TextColor3 = P.text}, 0.15) end)
+hbClose.MouseLeave:Connect(function() tw(hbClose, {TextColor3 = P.dim}, 0.15) end)
+
+-- toggle key binder
+make("TextLabel", {
+	Text = "Toggle Key",
+	Font = Enum.Font.GothamMedium, TextSize = 11,
+	TextColor3 = P.dim,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0.5, -20, 0, 20),
+	Position = UDim2.new(0, 16, 0, 50),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = hbPanel,
+})
+
+local hbKeyBtn = make("TextButton", {
+	Text = "[ " .. S.hitboxMenuKey.Name .. " ]",
+	Font = Enum.Font.GothamMedium, TextSize = 12,
+	TextColor3 = P.text,
+	BackgroundColor3 = P.bgLight,
+	AutoButtonColor = false,
+	Size = UDim2.new(0.5, -20, 0, 24),
+	Position = UDim2.new(0.5, 4, 0, 48),
+	Parent = hbPanel,
+})
+corner(hbKeyBtn, 6)
+bindAccent(stroke(hbKeyBtn, P.accent, 1, 0.6), "Color")
+
+hbKeyBtn.MouseEnter:Connect(function() tw(hbKeyBtn, {BackgroundColor3 = P.bgHover}, 0.15) end)
+hbKeyBtn.MouseLeave:Connect(function() tw(hbKeyBtn, {BackgroundColor3 = P.bgLight}, 0.15) end)
+
+conn(hbKeyBtn.MouseButton1Click:Connect(function()
+	if S.waitingForHitboxKey then return end
+	S.waitingForHitboxKey = true
+	hbKeyBtn.Text = "Press a key..."
+
+	local tempConn
+	tempConn = UIS.InputBegan:Connect(function(inp)
+		if inp.UserInputType == Enum.UserInputType.Keyboard then
+			S.hitboxMenuKey = inp.KeyCode
+			hbKeyBtn.Text = "[ " .. inp.KeyCode.Name .. " ]"
+			S.waitingForHitboxKey = false
+			tempConn:Disconnect()
+		end
+	end)
+	conn(tempConn)
+end))
+
+-- separator
+make("Frame", {
+	Size = UDim2.new(1, -32, 0, 1),
+	Position = UDim2.new(0, 16, 0, 80),
+	BackgroundColor3 = P.border,
+	BorderSizePixel = 0,
+	Parent = hbPanel,
+})
+
+-- body part toggles
+local function makeHBToggle(label, yPos, default, onToggle)
+	local frame = make("Frame", {
+		Size = UDim2.new(1, -32, 0, 26),
+		Position = UDim2.new(0, 16, 0, yPos),
+		BackgroundTransparency = 1,
+		Parent = hbPanel,
+	})
+	make("TextLabel", {
+		Text = label,
+		Font = Enum.Font.GothamMedium, TextSize = 12,
+		TextColor3 = P.text,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -50, 1, 0),
+		Position = UDim2.new(0, 0, 0, 0),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = frame,
+	})
+	local toggleBtn = make("TextButton", {
+		Text = default and "ON" or "OFF",
+		Font = Enum.Font.GothamBold, TextSize = 10,
+		TextColor3 = default and P.bg or P.dim,
+		BackgroundColor3 = default and P.accent or P.bgLight,
+		AutoButtonColor = false,
+		Size = UDim2.new(0, 42, 0, 20),
+		Position = UDim2.new(1, -42, 0.5, -10),
+		Parent = frame,
+	})
+	corner(toggleBtn, 6)
+	if default then bindAccent(toggleBtn, "BackgroundColor3") end
+
+	local isOn = default
+	toggleBtn.MouseButton1Click:Connect(function()
+		isOn = not isOn
+		if isOn then
+			toggleBtn.Text = "ON"
+			toggleBtn.TextColor3 = P.bg
+			toggleBtn.BackgroundColor3 = P.accent
+		else
+			toggleBtn.Text = "OFF"
+			toggleBtn.TextColor3 = P.dim
+			toggleBtn.BackgroundColor3 = P.bgLight
+		end
+		onToggle(isOn)
+	end)
+	return toggleBtn
+end
+
+make("TextLabel", {
+	Text = "Body Parts",
+	Font = Enum.Font.GothamMedium, TextSize = 11,
+	TextColor3 = P.dim,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(1, -32, 0, 18),
+	Position = UDim2.new(0, 16, 0, 88),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = hbPanel,
+})
+
+makeHBToggle("Head", 108, S.hitboxHead, function(v) S.hitboxHead = v end)
+makeHBToggle("Torso", 136, S.hitboxTorso, function(v) S.hitboxTorso = v end)
+makeHBToggle("Legs", 164, S.hitboxLegs, function(v) S.hitboxLegs = v end)
+
+-- separator
+make("Frame", {
+	Size = UDim2.new(1, -32, 0, 1),
+	Position = UDim2.new(0, 16, 0, 196),
+	BackgroundColor3 = P.border,
+	BorderSizePixel = 0,
+	Parent = hbPanel,
+})
+
+-- size control
+make("TextLabel", {
+	Text = "Size",
+	Font = Enum.Font.GothamMedium, TextSize = 11,
+	TextColor3 = P.dim,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0.3, 0, 0, 20),
+	Position = UDim2.new(0, 16, 0, 204),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = hbPanel,
+})
+
+local hbSizeLabel = make("TextLabel", {
+	Text = S.hitboxSize .. "x",
+	Font = Enum.Font.GothamBold, TextSize = 14,
+	TextColor3 = P.text,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0, 40, 0, 28),
+	Position = UDim2.new(0.5, -20, 0, 200),
+	TextXAlignment = Enum.TextXAlignment.Center,
+	Parent = hbPanel,
+})
+
+local hbMinus = make("TextButton", {
+	Text = "-",
+	Font = Enum.Font.GothamBold, TextSize = 16,
+	TextColor3 = P.text,
+	BackgroundColor3 = P.bgLight,
+	AutoButtonColor = false,
+	Size = UDim2.new(0, 32, 0, 26),
+	Position = UDim2.new(0.5, -60, 0, 201),
+	Parent = hbPanel,
+})
+corner(hbMinus, 6)
+hbMinus.MouseEnter:Connect(function() tw(hbMinus, {BackgroundColor3 = P.bgHover}, 0.15) end)
+hbMinus.MouseLeave:Connect(function() tw(hbMinus, {BackgroundColor3 = P.bgLight}, 0.15) end)
+
+local hbPlus = make("TextButton", {
+	Text = "+",
+	Font = Enum.Font.GothamBold, TextSize = 16,
+	TextColor3 = P.text,
+	BackgroundColor3 = P.bgLight,
+	AutoButtonColor = false,
+	Size = UDim2.new(0, 32, 0, 26),
+	Position = UDim2.new(0.5, 28, 0, 201),
+	Parent = hbPanel,
+})
+corner(hbPlus, 6)
+hbPlus.MouseEnter:Connect(function() tw(hbPlus, {BackgroundColor3 = P.bgHover}, 0.15) end)
+hbPlus.MouseLeave:Connect(function() tw(hbPlus, {BackgroundColor3 = P.bgLight}, 0.15) end)
+
+-- size slider bar
+local hbTrack = make("Frame", {
+	Size = UDim2.new(1, -32, 0, 6),
+	Position = UDim2.new(0, 16, 0, 234),
+	BackgroundColor3 = P.bgLight,
+	BorderSizePixel = 0,
+	Parent = hbPanel,
+})
+corner(hbTrack, 3)
+
+local hbFill = make("Frame", {
+	Size = UDim2.new((S.hitboxSize - 1) / 19, 0, 1, 0),
+	BackgroundColor3 = P.accent,
+	BorderSizePixel = 0,
+	Parent = hbTrack,
+})
+corner(hbFill, 3)
+bindAccent(hbFill, "BackgroundColor3")
+
+local function updateHBSize(newSize)
+	S.hitboxSize = math.clamp(newSize, 1, 20)
+	hbSizeLabel.Text = S.hitboxSize .. "x"
+	hbFill.Size = UDim2.new((S.hitboxSize - 1) / 19, 0, 1, 0)
+end
+
+conn(hbMinus.MouseButton1Click:Connect(function()
+	updateHBSize(S.hitboxSize - 1)
+end))
+conn(hbPlus.MouseButton1Click:Connect(function()
+	updateHBSize(S.hitboxSize + 1)
+end))
+
+-- separator
+make("Frame", {
+	Size = UDim2.new(1, -32, 0, 1),
+	Position = UDim2.new(0, 16, 0, 248),
+	BackgroundColor3 = P.border,
+	BorderSizePixel = 0,
+	Parent = hbPanel,
+})
+
+-- outline toggle
+makeHBToggle("Show Outline", 256, S.hitboxOutline, function(v) S.hitboxOutline = v end)
+
+-- separator
+make("Frame", {
+	Size = UDim2.new(1, -32, 0, 1),
+	Position = UDim2.new(0, 16, 0, 288),
+	BackgroundColor3 = P.border,
+	BorderSizePixel = 0,
+	Parent = hbPanel,
+})
+
+-- enable / disable button
+local hbEnableBtn = make("TextButton", {
+	Text = "ENABLE",
+	Font = Enum.Font.GothamBold, TextSize = 13,
+	TextColor3 = P.bg,
+	BackgroundColor3 = P.accent,
+	AutoButtonColor = false,
+	Size = UDim2.new(1, -32, 0, 32),
+	Position = UDim2.new(0, 16, 0, 296),
+	Parent = hbPanel,
+})
+corner(hbEnableBtn, 8)
+bindAccent(hbEnableBtn, "BackgroundColor3")
+
+hbEnableBtn.MouseEnter:Connect(function() tw(hbEnableBtn, {BackgroundTransparency = 0.15}, 0.15) end)
+hbEnableBtn.MouseLeave:Connect(function() tw(hbEnableBtn, {BackgroundTransparency = 0}, 0.15) end)
+
+conn(hbEnableBtn.MouseButton1Click:Connect(function()
+	if S.hitboxOn then
+		stopHitbox()
+		hbEnableBtn.Text = "ENABLE"
+		hbEnableBtn.BackgroundColor3 = P.accent
+		hbEnableBtn.TextColor3 = P.bg
+		notify("Hitbox Expander OFF", "info")
+	else
+		startHitbox()
+		hbEnableBtn.Text = "DISABLE"
+		hbEnableBtn.BackgroundColor3 = P.red
+		hbEnableBtn.TextColor3 = Color3.new(1, 1, 1)
+		notify("Hitbox Expander ON  (" .. S.hitboxSize .. "x)", "success")
+	end
+end))
+
+local HB_PANEL_HEIGHT = 340
+
+-- open/close hitbox menu functions
+openHitboxMenu = function()
+	if S.hitboxMenuOpen then return end
+	S.hitboxMenuOpen = true
+	hbPanel.Visible = true
+	tw(hbPanel, {Size = UDim2.new(0, 280, 0, HB_PANEL_HEIGHT)}, 0.3)
+end
+
+closeHitboxMenu = function()
+	if not S.hitboxMenuOpen then return end
+	S.hitboxMenuOpen = false
+	tw(hbPanel, {Size = UDim2.new(0, 280, 0, 0)}, 0.2)
+	task.delay(0.2, function() hbPanel.Visible = false end)
+end
+
+conn(hbClose.MouseButton1Click:Connect(function()
+	closeHitboxMenu()
+end))
+
 -- ╔═══════════════════════════════════════════╗
 -- ║  COMMAND DEFINITIONS                      ║
 -- ╚═══════════════════════════════════════════╝
-local CMDS = {} -- filled below
-local CMD_LOOKUP = {} -- name/alias → cmd entry
+local CMDS = {}
+local CMD_LOOKUP = {}
 
 local function defCmd(name, aliases, args, desc, cat, fn)
 	local entry = {name = name, aliases = aliases, args = args, desc = desc, category = cat, callback = fn}
@@ -1127,7 +1920,7 @@ defCmd("fly", {}, "[speed]", "Toggle fly  (WASD + Space/Shift)", "Movement", fun
 			if startFly() then notify("Fly ON  (speed " .. S.flySpeed .. ")", "success")
 			else notify("No character", "error") end
 		else
-			notify("Fly speed → " .. S.flySpeed, "success")
+			notify("Fly speed > " .. S.flySpeed, "success")
 		end
 	else
 		if S.flying then
@@ -1151,7 +1944,7 @@ defCmd("cfly", {"cframefly"}, "[speed]", "Toggle CFrame fly", "Movement", functi
 			if startCFly() then notify("CFly ON  (speed " .. S.cflySpeed .. ")", "success")
 			else notify("No character", "error") end
 		else
-			notify("CFly speed → " .. S.cflySpeed, "success")
+			notify("CFly speed > " .. S.cflySpeed, "success")
 		end
 	else
 		if S.cflying then
@@ -1174,7 +1967,7 @@ defCmd("cws", {"cframews"}, "[speed]", "Toggle CFrame WalkSpeed", "Movement", fu
 		if not S.cwsOn then
 			startCWS(); notify("CWS ON  (speed " .. S.cwsSpeed .. ")", "success")
 		else
-			notify("CWS speed → " .. S.cwsSpeed, "success")
+			notify("CWS speed > " .. S.cwsSpeed, "success")
 		end
 	else
 		if S.cwsOn then
@@ -1208,7 +2001,7 @@ defCmd("speed", {"ws", "walkspeed"}, "[value]", "Set WalkSpeed  (default 16)", "
 	v = math.clamp(v, 0, 2000)
 	hum.WalkSpeed = v
 	S.customWS = v
-	notify("WalkSpeed → " .. v, "success")
+	notify("WalkSpeed > " .. v, "success")
 end)
 
 defCmd("jump", {"jh", "jumpheight"}, "[value]", "Set JumpHeight  (default 7.2)", "Movement", function(a)
@@ -1219,7 +2012,7 @@ defCmd("jump", {"jh", "jumpheight"}, "[value]", "Set JumpHeight  (default 7.2)",
 	hum.UseJumpPower = false
 	hum.JumpHeight = v
 	S.customJH = v
-	notify("JumpHeight → " .. v, "success")
+	notify("JumpHeight > " .. v, "success")
 end)
 
 defCmd("noclip", {"nc"}, "", "Toggle noclip", "Movement", function()
@@ -1282,15 +2075,51 @@ defCmd("unfreecam", {"unfc"}, "", "Disable freecam", "Visual", function()
 	stopFreecam(); notify("Freecam OFF", "info")
 end)
 
-defCmd("fling", {}, "<player>", "Fling target for 4s", "Trolling", function(a)
-	if #a == 0 then notify("Provide a player", "error"); return end
+defCmd("fling", {}, "<player/all/random>", "Fling target(s)", "Trolling", function(a)
+	if #a == 0 then notify("Provide a player, 'all', or 'random'", "error"); return end
+	local arg = string.lower(a[1])
+	if arg == "all" then
+		notify("Flinging everyone continuously...", "warning")
+		startFlingAll()
+	else
+		local target = getPlayer(arg)
+		if target then
+			notify("Flinging " .. target.DisplayName .. "...", "warning")
+			startFling(target, 4, false)
+		else
+			notify("Player not found", "error")
+		end
+	end
+end)
+
+defCmd("unfling", {"unflingall"}, "", "Stop flinging", "Trolling", function()
+	if S.flingAllOn then
+		stopFlingAll()
+		notify("Fling All stopped", "info")
+	else
+		stopFling()
+		notify("Fling stopped", "info")
+	end
+	local hrp = getHRP()
+	if hrp and _flingOldPos then
+		hrp.CFrame = _flingOldPos
+		_flingOldPos = nil
+	end
+end)
+
+defCmd("bang", {}, "<player/random>", "Bang a player (troll)", "Trolling", function(a)
+	if #a == 0 then notify("Provide a player or 'random'", "error"); return end
 	local target = getPlayer(a[1])
 	if target then
-		notify("Flinging " .. target.DisplayName .. "...", "warning")
-		startFling(target)
+		notify("Banging " .. target.DisplayName .. "...", "warning")
+		startBang(target)
 	else
 		notify("Player not found", "error")
 	end
+end)
+
+defCmd("unbang", {}, "", "Stop banging", "Trolling", function()
+	stopBang(); notify("Bang stopped", "info")
 end)
 
 -- ── CHARACTER ───────────────────────────────
@@ -1313,7 +2142,7 @@ defCmd("heal", {}, "", "Heal to max HP", "Character", function()
 end)
 
 defCmd("kill", {"die"}, "", "Kill yourself", "Character", function()
-	if S.godmode then stopGod() end -- override god so kill works
+	if S.godmode then stopGod() end
 	local hum = getHum()
 	if hum then hum.Health = 0; notify("Killed", "info")
 	else notify("No character", "error") end
@@ -1324,7 +2153,7 @@ defCmd("reset", {"re"}, "", "Reset character", "Character", function()
 	local hum = getHum()
 	if hum then
 		hum.Health = 0
-		notify("Resetting…", "info")
+		notify("Resetting...", "info")
 	end
 end)
 
@@ -1341,25 +2170,36 @@ defCmd("sit", {}, "", "Toggle sit", "Character", function()
 	end
 end)
 
-defCmd("invis", {"invisible"}, "", "Toggle invisibility", "Character", function()
-	if S.invisible then
-		setInvis(false); notify("Visible", "info")
+defCmd("invis", {"invisible"}, "[key]", "Toggle FE invis or bind key", "Character", function(a)
+	if #a > 0 then
+		local keyStr = string.upper(a[1])
+		local success, keycode = pcall(function() return Enum.KeyCode[keyStr] end)
+		if success and keycode then
+			S.trueInvisKey = keycode
+			notify("FE Invis bound to " .. keyStr, "success")
+		else
+			notify("Invalid key", "error")
+		end
 	else
-		setInvis(true); notify("Invisible", "success")
+		toggleFEInvis()
 	end
 end)
 
 defCmd("vis", {"visible"}, "", "Become visible", "Character", function()
-	setInvis(false); notify("Visible", "info")
+	if S.trueInvisOn then
+		toggleFEInvis()
+	else
+		notify("Already visible", "info")
+	end
 end)
 
 -- ── APPEARANCE ──────────────────────────────
-defCmd("tiny", {"small"}, "", "Shrink character (0.5×)", "Appearance", function()
+defCmd("tiny", {"small"}, "", "Shrink character (0.5x)", "Appearance", function()
 	if setScale(0.5) then notify("Tiny mode", "success")
 	else notify("R15 only", "warning") end
 end)
 
-defCmd("big", {"giant"}, "", "Grow character (3×)", "Appearance", function()
+defCmd("big", {"giant"}, "", "Grow character (3x)", "Appearance", function()
 	if setScale(3) then notify("Big mode", "success")
 	else notify("R15 only", "warning") end
 end)
@@ -1376,13 +2216,12 @@ defCmd("spin", {}, "[speed]", "Toggle spin  (default 20)", "Appearance", functio
 		if not S.spinning then
 			startSpin(); notify("Spinning  (speed " .. S.spinSpeed .. ")", "success")
 		else
-			-- update live
 			local hrp = getHRP()
 			if hrp then
 				local bav = hrp:FindFirstChild("_AdminSpin")
 				if bav then bav.AngularVelocity = Vector3.new(0, S.spinSpeed, 0) end
 			end
-			notify("Spin speed → " .. S.spinSpeed, "success")
+			notify("Spin speed > " .. S.spinSpeed, "success")
 		end
 	else
 		if S.spinning then
@@ -1402,14 +2241,14 @@ defCmd("hh", {"hipheight"}, "[value]", "Set hip height  (float effect)", "Appear
 	if not hum then notify("No character", "error"); return end
 	local v = tonumber(a[1]) or 0
 	hum.HipHeight = math.clamp(v, -10, 200)
-	notify("HipHeight → " .. hum.HipHeight, "success")
+	notify("HipHeight > " .. hum.HipHeight, "success")
 end)
 
 -- ── VISUAL ──────────────────────────────────
 defCmd("fov", {}, "[value]", "Set field of view  (default 70)", "Visual", function(a)
 	local v = tonumber(a[1]) or 70
 	Camera.FieldOfView = math.clamp(v, 1, 120)
-	notify("FOV → " .. Camera.FieldOfView, "success")
+	notify("FOV > " .. Camera.FieldOfView, "success")
 end)
 
 defCmd("fullbright", {"fb"}, "", "Toggle fullbright", "Visual", function()
@@ -1432,6 +2271,49 @@ defCmd("unesp", {}, "", "Disable ESP", "Visual", function()
 	clearESP(); notify("ESP OFF", "info")
 end)
 
+defCmd("teamesp", {"tesp"}, "", "Toggle team-colored ESP", "Visual", function()
+	if S.teamEspOn then
+		clearTeamESP(); notify("Team ESP OFF", "info")
+	else
+		enableTeamESP(); notify("Team ESP ON", "success")
+	end
+end)
+
+defCmd("unteamesp", {"untesp"}, "", "Disable Team ESP", "Visual", function()
+	clearTeamESP(); notify("Team ESP OFF", "info")
+end)
+
+-- ── COMBAT ──────────────────────────────────
+defCmd("reach", {}, "[studs]", "Toggle sword reach + outline", "Combat", function(a)
+	if #a > 0 then
+		local v = tonumber(a[1])
+		if v then S.reachValue = math.clamp(v, 1, 100) end
+		if not S.reachOn then
+			if startReach() then notify("Reach ON  (" .. S.reachValue .. " studs)", "success") end
+		else
+			notify("Reach > " .. S.reachValue .. " studs", "success")
+		end
+	else
+		if S.reachOn then
+			stopReach(); notify("Reach OFF", "info")
+		else
+			if startReach() then notify("Reach ON  (" .. S.reachValue .. " studs)", "success") end
+		end
+	end
+end)
+
+defCmd("unreach", {}, "", "Disable reach", "Combat", function()
+	stopReach(); notify("Reach OFF", "info")
+end)
+
+defCmd("hitbox", {"hb"}, "", "Open hitbox expander menu", "Combat", function()
+	if S.hitboxMenuOpen then
+		closeHitboxMenu()
+	else
+		openHitboxMenu()
+	end
+end)
+
 -- ── UTILITY ─────────────────────────────────
 defCmd("cmds", {"commands", "help"}, "", "Toggle commands list", "Utility", function()
 	-- handled specially after execute
@@ -1445,7 +2327,7 @@ defCmd("chat", {"say"}, "<msg>", "Send a chat message", "Utility", function(a)
 end)
 
 defCmd("rejoin", {"rj"}, "", "Rejoin current server", "Utility", function()
-	notify("Rejoining…", "warning")
+	notify("Rejoining...", "warning")
 	task.wait(0.5)
 	TeleportService:Teleport(game.PlaceId, LP)
 end)
@@ -1503,7 +2385,7 @@ end)
 -- ║  POPULATE COMMANDS PANEL                  ║
 -- ╚═══════════════════════════════════════════╝
 do
-	local order = {"Movement", "Character", "Appearance", "Visual", "Trolling", "Utility"}
+	local order = {"Movement", "Character", "Appearance", "Visual", "Combat", "Trolling", "Utility"}
 	local lo = 0
 	for _, cat in ipairs(order) do
 		lo = lo + 1
@@ -1515,7 +2397,7 @@ do
 			Parent = panelScroll,
 		})
 		local seplabel = make("TextLabel", {
-			Text = "─  " .. cat:upper() .. "  ─",
+			Text = "--  " .. cat:upper() .. "  --",
 			Font = Enum.Font.GothamBold, TextSize = 10,
 			BackgroundTransparency = 1,
 			Size = UDim2.new(1, 0, 1, 0),
@@ -1524,28 +2406,37 @@ do
 		})
 		bindAccent(seplabel, "TextColor3")
 
+		_cmdCatHeaders[cat] = sep
+
 		for _, cmd in ipairs(CMDS) do
 			if cmd.category == cat then
 				lo = lo + 1
-				local row = make("Frame", {
+				local row = make("TextButton", {
 					Size = UDim2.new(1, 0, 0, 32),
 					BackgroundColor3 = P.bgLight,
 					BackgroundTransparency = 1,
+					AutoButtonColor = false,
 					LayoutOrder = lo,
+					Text = "",
 					Parent = panelScroll,
 				})
 				corner(row, 6)
 
 				-- hover effect
-				row.InputBegan:Connect(function(i)
-					if i.UserInputType == Enum.UserInputType.MouseMovement then
-						tw(row, {BackgroundTransparency = 0.3}, 0.15)
-					end
+				row.MouseEnter:Connect(function()
+					tw(row, {BackgroundTransparency = 0.3}, 0.15)
 				end)
-				row.InputEnded:Connect(function(i)
-					if i.UserInputType == Enum.UserInputType.MouseMovement then
-						tw(row, {BackgroundTransparency = 1}, 0.15)
-					end
+				row.MouseLeave:Connect(function()
+					tw(row, {BackgroundTransparency = 1}, 0.15)
+				end)
+
+				-- click to insert into command bar
+				row.MouseButton1Click:Connect(function()
+					if openBar then openBar() end
+					task.defer(function()
+						input.Text = cmd.name .. " "
+						input:CaptureFocus()
+					end)
 				end)
 
 				local usage = cmd.name
@@ -1575,10 +2466,60 @@ do
 					TextTruncate = Enum.TextTruncate.AtEnd,
 					Parent = row,
 				})
+
+				table.insert(_cmdPanelRows, {frame = row, cmd = cmd})
 			end
 		end
 	end
 end
+
+-- ── PANEL SEARCH FILTER ─────────────────────
+local function filterCmdPanel(query)
+	query = query:lower():match("^%s*(.-)%s*$")
+	local visibleCats = {}
+
+	for _, item in ipairs(_cmdPanelRows) do
+		local cmd = item.cmd
+		local matched = (query == "")
+		if not matched then
+			-- match command name
+			if cmd.name:lower():find(query, 1, true) then
+				matched = true
+			end
+			-- match aliases
+			if not matched then
+				for _, a in ipairs(cmd.aliases) do
+					if a:lower():find(query, 1, true) then matched = true; break end
+				end
+			end
+			-- match description
+			if not matched then
+				if cmd.desc:lower():find(query, 1, true) then
+					matched = true
+				end
+			end
+			-- match category
+			if not matched then
+				if cmd.category:lower():find(query, 1, true) then
+					matched = true
+				end
+			end
+		end
+
+		item.frame.Visible = matched
+		if matched then
+			visibleCats[cmd.category] = true
+		end
+	end
+
+	for cat, header in pairs(_cmdCatHeaders) do
+		header.Visible = (query == "" or visibleCats[cat] == true)
+	end
+end
+
+conn(panelSearch:GetPropertyChangedSignal("Text"):Connect(function()
+	filterCmdPanel(panelSearch.Text)
+end))
 
 -- ╔═══════════════════════════════════════════╗
 -- ║  COMMAND  EXECUTION                       ║
@@ -1634,7 +2575,6 @@ local function updateSuggestions()
 
 	local matches = {}
 	for _, cmd in ipairs(CMDS) do
-		-- match command name or aliases
 		local matched = false
 		if cmd.name:lower():sub(1, #query) == query then
 			matched = true
@@ -1696,7 +2636,6 @@ local function updateSuggestions()
 		btn.MouseButton1Click:Connect(function()
 			input.Text = cmd.name .. " "
 			input:CaptureFocus()
-			-- move cursor to end (Roblox handles this automatically on CaptureFocus after text change)
 		end)
 	end
 end
@@ -1706,20 +2645,19 @@ end
 -- ╚═══════════════════════════════════════════╝
 local suppressSemicolon = false
 
-local function openBar()
+openBar = function()
 	if S.barOpen then return end
 	S.barOpen = true
 	suppressSemicolon = true
 	input.Text = ""
 	sugFrame.Visible = false
 	tw(barWrap, {Position = BAR_Y_SHOWN}, 0.35)
-	-- wait for the animation to be underway before focusing
 	task.defer(function()
 		input:CaptureFocus()
 	end)
 end
 
-local function closeBar()
+closeBar = function()
 	if not S.barOpen then return end
 	S.barOpen = false
 	input:ReleaseFocus()
@@ -1740,6 +2678,29 @@ conn(UIS.InputBegan:Connect(function(inp, gp)
 	end
 end))
 
+-- hitbox menu toggle key
+conn(UIS.InputBegan:Connect(function(inp, gp)
+	if gp then return end
+	if S.waitingForHitboxKey then return end
+	if inp.KeyCode == S.hitboxMenuKey then
+		if S.hitboxMenuOpen then
+			closeHitboxMenu()
+		else
+			openHitboxMenu()
+		end
+	end
+end))
+
+-- true invis hotkey
+conn(UIS.InputBegan:Connect(function(inp, gp)
+	if gp then return end
+	if inp.UserInputType == Enum.UserInputType.Keyboard then
+		if S.trueInvisKey and inp.KeyCode == S.trueInvisKey then
+			toggleFEInvis()
+		end
+	end
+end))
+
 -- suppress the ; that was used to OPEN the bar
 conn(input:GetPropertyChangedSignal("Text"):Connect(function()
 	if suppressSemicolon then
@@ -1752,17 +2713,15 @@ conn(input:GetPropertyChangedSignal("Text"):Connect(function()
 	updateSuggestions()
 end))
 
--- enter → execute, escape → close
+-- enter -> execute, escape -> close
 conn(input.FocusLost:Connect(function(enterPressed)
 	if enterPressed then
 		local raw = input.Text
 		closeBar()
-		-- small delay so bar animates out before side‑effects
 		task.defer(function()
 			execCmd(raw)
 		end)
 	else
-		-- lost focus without enter (clicked away / pressed escape)
 		closeBar()
 	end
 end))
@@ -1807,7 +2766,6 @@ end
 -- ║  RESPAWN HANDLING                         ║
 -- ╚═══════════════════════════════════════════╝
 conn(LP.CharacterAdded:Connect(function(char)
-	-- features that are invalid without the old character
 	stopFly()
 	stopCFly()
 	stopCWS()
@@ -1816,22 +2774,21 @@ conn(LP.CharacterAdded:Connect(function(char)
 	stopAntiFling()
 	stopGod()
 	stopSpin()
-	S.invisible = false
+	stopBang()
+	stopReach()
+	stopHitbox()
+	S.trueInvisOn = false
 	S.origTransp = {}
 
-	-- wait for humanoid
 	local hum = char:WaitForChild("Humanoid", 10)
 	if not hum then return end
 
-	-- re-apply custom stats
 	task.delay(0.3, function()
 		local h = getHum()
 		if not h then return end
 		if S.customWS then h.WalkSpeed = S.customWS end
 		if S.customJH then h.UseJumpPower = false; h.JumpHeight = S.customJH end
 	end)
-
-	-- re-apply ESP highlights to self's new char isn't needed (ESP is on other players)
 end))
 
 -- ╔═══════════════════════════════════════════╗
@@ -1846,9 +2803,15 @@ _G._AdminCleanup = function()
 	stopAntiFling()
 	stopGod()
 	stopSpin()
-	setInvis(false)
+	stopBang()
+	stopReach()
+	stopHitbox()
+	if S.trueInvisOn then toggleFEInvis() end
 	clearESP()
+	clearTeamESP()
 	setFullbright(false)
+	stopFreecam()
+	if stopFlingAll then stopFlingAll() else stopFling() end
 	for _, c in ipairs(_conns) do pcall(function() c:Disconnect() end) end
 	_conns = {}
 	if gui and gui.Parent then gui:Destroy() end
@@ -1857,5 +2820,5 @@ end
 -- ╔═══════════════════════════════════════════╗
 -- ║  DONE                                     ║
 -- ╚═══════════════════════════════════════════╝
-notify("Admin loaded — press  ;  to open", "success")
+notify("Admin loaded -- press  ;  to open", "success")
 print("[FE Admin] Loaded successfully. Press ; to open the command bar.")
