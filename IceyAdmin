@@ -1,0 +1,1861 @@
+--[[
+	FE ADMIN PANEL
+	━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	Execute this in your Lua executor.
+	Press  ;  to open the command bar.
+	Type  cmds  to see every available command.
+
+	Commands work with or without the ; prefix
+	inside the text box  (;fly 50  and  fly 50
+	both work).
+
+	Re-run safe — running again cleanly replaces
+	the previous instance.
+]]
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  SERVICES                                 ║
+-- ╚═══════════════════════════════════════════╝
+local Players          = game:GetService("Players")
+local UIS              = game:GetService("UserInputService")
+local RunService       = game:GetService("RunService")
+local TweenService     = game:GetService("TweenService")
+local Lighting         = game:GetService("Lighting")
+local TeleportService  = game:GetService("TeleportService")
+
+local LP     = Players.LocalPlayer
+local Mouse  = LP:GetMouse()
+local Camera = workspace.CurrentCamera
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  RE-RUN CLEANUP                           ║
+-- ╚═══════════════════════════════════════════╝
+if _G._AdminCleanup then
+	pcall(_G._AdminCleanup)
+end
+
+local GUI_NAME = "FEAdminGui"
+for _, g in ipairs({LP.PlayerGui, game:GetService("CoreGui")}) do
+	pcall(function()
+		local old = g:FindFirstChild(GUI_NAME)
+		if old then old:Destroy() end
+	end)
+end
+
+-- master list of connections so we can nuke them on re-run
+local _conns = {}
+local function conn(c)
+	table.insert(_conns, c)
+	return c
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  STATE                                    ║
+-- ╚═══════════════════════════════════════════╝
+local S = {
+	barOpen       = false,
+	panelOpen     = false,
+
+	flying        = false,
+	flySpeed      = 50,
+	flyConn       = nil,
+
+	cflying       = false,
+	cflySpeed     = 50,
+	cflyConn      = nil,
+
+	cwsOn         = false,
+	cwsSpeed      = 50,
+	cwsConn       = nil,
+
+	infJumpOn     = false,
+	infJumpConn   = nil,
+
+	noclipping    = false,
+	noclipConn    = nil,
+
+	godmode       = false,
+	godConn       = nil,
+
+	invisible     = false,
+	origTransp    = {},
+
+	espOn         = false,
+	espConns      = {},
+
+	fullbright    = false,
+	origLighting  = {},
+	hiddenEffects = {},
+
+	spinning      = false,
+	spinSpeed     = 20,
+
+	showFps       = false,
+	showCoords    = false,
+
+	customWS      = nil,   -- walkspeed to re-apply on respawn
+	customJH      = nil,   -- jumpheight to re-apply on respawn
+	accentElements= {},
+	antiflingOn   = false,
+	antiflingConn = nil,
+	freecamOn     = false,
+	freecamConn   = nil,
+	flinging      = false,
+	flingConn     = nil,
+}
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  PALETTE                                  ║
+-- ╚═══════════════════════════════════════════╝
+local P = {
+	bg        = Color3.fromRGB(14, 14, 22),
+	bgMed     = Color3.fromRGB(22, 22, 34),
+	bgLight   = Color3.fromRGB(32, 32, 50),
+	bgHover   = Color3.fromRGB(42, 42, 62),
+
+	accent    = Color3.fromRGB(130, 72, 255),
+	accentDim = Color3.fromRGB(90, 50, 180),
+
+	text      = Color3.fromRGB(230, 230, 242),
+	dim       = Color3.fromRGB(120, 120, 150),
+	muted     = Color3.fromRGB(70, 70, 95),
+
+	green     = Color3.fromRGB(52, 211, 153),
+	red       = Color3.fromRGB(239, 68, 68),
+	yellow    = Color3.fromRGB(251, 191, 36),
+	blue      = Color3.fromRGB(96, 165, 250),
+
+	border    = Color3.fromRGB(50, 50, 72),
+}
+
+local function bindAccent(obj, prop)
+	table.insert(S.accentElements, {obj = obj, prop = prop})
+	obj[prop] = P.accent
+end
+local function updateAccent(col)
+	P.accent = col
+	for _, a in ipairs(S.accentElements) do
+		if a.obj and a.obj.Parent then a.obj[a.prop] = col end
+	end
+	if S.espOn then
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr.Character then
+				local hl = plr.Character:FindFirstChild("_AESP")
+				if hl then hl.FillColor = col end
+			end
+		end
+	end
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  HELPERS                                  ║
+-- ╚═══════════════════════════════════════════╝
+local function getChar()
+	return LP.Character
+end
+local function getHum()
+	local c = getChar()
+	return c and c:FindFirstChildOfClass("Humanoid")
+end
+local function getHRP()
+	local c = getChar()
+	return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function getPlayer(nameStr)
+	if not nameStr then return nil end
+	local lower = string.lower(nameStr)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if string.sub(string.lower(p.Name), 1, #lower) == lower or string.sub(string.lower(p.DisplayName), 1, #lower) == lower then
+			return p
+		end
+	end
+	return nil
+end
+
+local function make(cls, props, kids)
+	local inst = Instance.new(cls)
+	for k, v in pairs(props) do inst[k] = v end
+	if kids then for _, ch in ipairs(kids) do ch.Parent = inst end end
+	return inst
+end
+
+local function corner(p, r)
+	make("UICorner", {CornerRadius = UDim.new(0, r or 8), Parent = p})
+end
+local function stroke(p, col, th, tr)
+	return make("UIStroke", {
+		Color = col or P.border, Thickness = th or 1,
+		Transparency = tr or 0,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		Parent = p,
+	})
+end
+local function pad(p, t, b, l, r)
+	make("UIPadding", {
+		PaddingTop = UDim.new(0, t or 0), PaddingBottom = UDim.new(0, b or 0),
+		PaddingLeft = UDim.new(0, l or 0), PaddingRight = UDim.new(0, r or 0),
+		Parent = p,
+	})
+end
+
+local function tw(obj, props, dur, style, dir)
+	local t = TweenService:Create(obj,
+		TweenInfo.new(dur or 0.35, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out),
+		props)
+	t:Play()
+	return t
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  SCREEN GUI                               ║
+-- ╚═══════════════════════════════════════════╝
+local gui = make("ScreenGui", {
+	Name            = GUI_NAME,
+	ResetOnSpawn    = false,
+	ZIndexBehavior  = Enum.ZIndexBehavior.Sibling,
+	DisplayOrder    = 999,
+	IgnoreGuiInset  = true,
+})
+pcall(function() gui.Parent = game:GetService("CoreGui") end)
+if not gui.Parent then gui.Parent = LP.PlayerGui end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  NOTIFICATION SYSTEM                      ║
+-- ╚═══════════════════════════════════════════╝
+local notifHolder = make("Frame", {
+	Name = "Notifs",
+	Size = UDim2.new(0, 260, 0.6, 0),
+	Position = UDim2.new(1, -14, 0, 50),
+	AnchorPoint = Vector2.new(1, 0),
+	BackgroundTransparency = 1,
+	Parent = gui,
+})
+make("UIListLayout", {
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 5),
+	Parent = notifHolder,
+})
+
+local _nid = 0
+local function notify(msg, kind)
+	kind = kind or "info"
+	_nid = _nid + 1
+
+	local cols = {success = P.green, error = P.red, warning = P.yellow, info = P.blue}
+	local icons = {success = "✓", error = "✗", warning = "⚠", info = "ℹ"}
+	local accentCol = cols[kind] or P.blue
+	local icon      = icons[kind] or "ℹ"
+
+	local f = make("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		BackgroundColor3 = P.bg,
+		BackgroundTransparency = 0.06,
+		ClipsDescendants = true,
+		LayoutOrder = _nid,
+		Parent = notifHolder,
+	})
+	corner(f, 8)
+	stroke(f, accentCol, 1, 0.55)
+
+	local bar = make("Frame", {
+		Size = UDim2.new(0, 3, 0.55, 0),
+		Position = UDim2.new(0, 7, 0.225, 0),
+		BackgroundColor3 = accentCol,
+		BorderSizePixel = 0,
+		Parent = f,
+	})
+	corner(bar, 2)
+
+	make("TextLabel", {
+		Text = icon,
+		Font = Enum.Font.GothamBold, TextSize = 13,
+		TextColor3 = accentCol,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(0, 18, 1, 0),
+		Position = UDim2.new(0, 16, 0, 0),
+		Parent = f,
+	})
+	make("TextLabel", {
+		Text = msg,
+		Font = Enum.Font.GothamMedium, TextSize = 12,
+		TextColor3 = P.text,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -42, 1, 0),
+		Position = UDim2.new(0, 38, 0, 0),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = f,
+	})
+
+	-- animate in
+	tw(f, {Size = UDim2.new(1, 0, 0, 34)}, 0.25)
+
+	-- auto dismiss
+	task.delay(3.2, function()
+		if f and f.Parent then
+			tw(f, {Size = UDim2.new(1, 0, 0, 0)}, 0.25)
+			task.wait(0.28)
+			if f and f.Parent then f:Destroy() end
+		end
+	end)
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  COMMAND BAR  (bottom of screen)          ║
+-- ╚═══════════════════════════════════════════╝
+local BAR_Y_HIDDEN = UDim2.new(0, 0, 1, 80)
+local BAR_Y_SHOWN  = UDim2.new(0, 0, 1, -12)
+
+local barWrap = make("Frame", {
+	Name = "BarWrap",
+	Size = UDim2.new(1, 0, 0, 130),
+	Position = BAR_Y_HIDDEN,
+	AnchorPoint = Vector2.new(0, 1),
+	BackgroundTransparency = 1,
+	Parent = gui,
+})
+
+-- suggestion list (above bar)
+local sugFrame = make("Frame", {
+	Name = "Suggestions",
+	Size = UDim2.new(0, 460, 0, 0),
+	Position = UDim2.new(0.5, 0, 1, -52),
+	AnchorPoint = Vector2.new(0.5, 1),
+	BackgroundColor3 = P.bg,
+	BackgroundTransparency = 0.04,
+	AutomaticSize = Enum.AutomaticSize.Y,
+	ClipsDescendants = true,
+	Visible = false,
+	Parent = barWrap,
+})
+corner(sugFrame, 10)
+stroke(sugFrame, P.border, 1, 0.4)
+pad(sugFrame, 4, 4, 4, 4)
+make("UIListLayout", {
+	SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2), Parent = sugFrame,
+})
+
+-- the bar itself
+local cmdBar = make("Frame", {
+	Name = "CmdBar",
+	Size = UDim2.new(0, 460, 0, 42),
+	Position = UDim2.new(0.5, 0, 1, -6),
+	AnchorPoint = Vector2.new(0.5, 1),
+	BackgroundColor3 = P.bg,
+	BackgroundTransparency = 0.05,
+	Parent = barWrap,
+})
+corner(cmdBar, 12)
+bindAccent(stroke(cmdBar, P.accent, 1.5, 0.25), "Color")
+
+-- glow behind bar (subtle)
+local glow = make("ImageLabel", {
+	Size = UDim2.new(1, 60, 1, 40),
+	Position = UDim2.new(0.5, 0, 0.5, 0),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	BackgroundTransparency = 1,
+	Image = "rbxassetid://5554236805",
+	ImageTransparency = 0.88,
+	ScaleType = Enum.ScaleType.Slice,
+	SliceCenter = Rect.new(23, 23, 277, 277),
+	ZIndex = 0,
+	Parent = cmdBar,
+})
+bindAccent(glow, "ImageColor3")
+
+-- prefix ;
+local pfx = make("TextLabel", {
+	Text = ";",
+	Font = Enum.Font.GothamBold, TextSize = 22,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0, 28, 1, 0),
+	Position = UDim2.new(0, 12, 0, 0),
+	TextXAlignment = Enum.TextXAlignment.Center,
+	Parent = cmdBar,
+})
+bindAccent(pfx, "TextColor3")
+
+local input = make("TextBox", {
+	Name = "Input",
+	Text = "",
+	PlaceholderText = "type a command…",
+	PlaceholderColor3 = P.muted,
+	Font = Enum.Font.GothamMedium, TextSize = 15,
+	TextColor3 = P.text,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(1, -50, 1, 0),
+	Position = UDim2.new(0, 42, 0, 0),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	ClearTextOnFocus = false,
+	Parent = cmdBar,
+})
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  COMMANDS PANEL  (right side)             ║
+-- ╚═══════════════════════════════════════════╝
+local PANEL_HIDDEN = UDim2.new(1, 320, 0.5, 0)
+local PANEL_SHOWN  = UDim2.new(1, -14, 0.5, 0)
+
+local panel = make("Frame", {
+	Name = "CmdsPanel",
+	Size = UDim2.new(0, 270, 0, 460),
+	Position = PANEL_HIDDEN,
+	AnchorPoint = Vector2.new(1, 0.5),
+	BackgroundColor3 = P.bg,
+	BackgroundTransparency = 0.04,
+	Parent = gui,
+})
+corner(panel, 14)
+stroke(panel, P.border, 1, 0.3)
+
+-- panel header
+local panelHeader = make("Frame", {
+	Size = UDim2.new(1, 0, 0, 44),
+	BackgroundTransparency = 1,
+	Parent = panel,
+})
+make("TextLabel", {
+	Text = "Commands",
+	Font = Enum.Font.GothamMedium, TextSize = 14,
+	TextColor3 = P.text,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(1, -50, 1, 0),
+	Position = UDim2.new(0, 16, 0, 0),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = panelHeader,
+})
+local panelClose = make("TextButton", {
+	Text = "X",
+	Font = Enum.Font.GothamMedium, TextSize = 14,
+	TextColor3 = P.dim,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0, 44, 0, 44),
+	Position = UDim2.new(1, -44, 0, 0),
+	Parent = panelHeader,
+})
+panelClose.MouseEnter:Connect(function() tw(panelClose, {TextColor3 = P.text}, 0.15) end)
+panelClose.MouseLeave:Connect(function() tw(panelClose, {TextColor3 = P.dim}, 0.15) end)
+
+-- scrolling body
+local panelScroll = make("ScrollingFrame", {
+	Size = UDim2.new(1, -2, 1, -48),
+	Position = UDim2.new(0, 0, 0, 46),
+	BackgroundTransparency = 1,
+	ScrollBarThickness = 3,
+	BorderSizePixel = 0,
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	CanvasSize = UDim2.new(0, 0, 0, 0),
+	Parent = panel,
+})
+bindAccent(panelScroll, "ScrollBarImageColor3")
+pad(panelScroll, 4, 10, 14, 10)
+local listLayout = make("UIListLayout", {
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 2),
+	Parent = panelScroll,
+})
+listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+	panelScroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 24)
+end)
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  INFO LABELS  (FPS / Coords)              ║
+-- ╚═══════════════════════════════════════════╝
+local fpsLabel = make("TextLabel", {
+	Name = "FPS",
+	Text = "FPS: --",
+	Font = Enum.Font.GothamBold, TextSize = 13,
+	TextColor3 = P.green,
+	TextStrokeTransparency = 0.5,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0, 120, 0, 18),
+	Position = UDim2.new(0, 10, 0, 46),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Visible = false,
+	Parent = gui,
+})
+
+local coordsLabel = make("TextLabel", {
+	Name = "Coords",
+	Text = "X: 0  Y: 0  Z: 0",
+	Font = Enum.Font.GothamBold, TextSize = 13,
+	TextColor3 = P.blue,
+	TextStrokeTransparency = 0.5,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0, 260, 0, 18),
+	Position = UDim2.new(0, 10, 0, 66),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Visible = false,
+	Parent = gui,
+})
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  SETTINGS MENU                            ║
+-- ╚═══════════════════════════════════════════╝
+local setPanel = make("Frame", {
+	Name = "SettingsPanel",
+	Size = UDim2.new(0, 260, 0, 0), -- starts hidden
+	Position = UDim2.new(0.5, 0, 0.5, 0),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	BackgroundColor3 = P.bg,
+	BackgroundTransparency = 0.04,
+	Visible = false,
+	ClipsDescendants = true,
+	Parent = gui,
+})
+corner(setPanel, 14)
+bindAccent(stroke(setPanel, P.border, 1, 0.3), "Color")
+
+local sh = make("Frame", {
+	Size = UDim2.new(1, 0, 0, 44),
+	BackgroundTransparency = 1,
+	Parent = setPanel,
+})
+make("TextLabel", {
+	Text = "Settings",
+	Font = Enum.Font.GothamMedium, TextSize = 14,
+	TextColor3 = P.text,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(1, -50, 1, 0),
+	Position = UDim2.new(0, 16, 0, 0),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = sh,
+})
+local sc = make("TextButton", {
+	Text = "X",
+	Font = Enum.Font.GothamMedium, TextSize = 14,
+	TextColor3 = P.dim,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(0, 44, 0, 44),
+	Position = UDim2.new(1, -44, 0, 0),
+	Parent = sh,
+})
+sc.MouseEnter:Connect(function() tw(sc, {TextColor3 = P.text}, 0.15) end)
+sc.MouseLeave:Connect(function() tw(sc, {TextColor3 = P.dim}, 0.15) end)
+conn(sc.MouseButton1Click:Connect(function() 
+	tw(setPanel, {Size = UDim2.new(0, 260, 0, 0)}, 0.2)
+	task.delay(0.2, function() setPanel.Visible = false end)
+end))
+
+make("TextLabel", {
+	Text = "UI Theme",
+	Font = Enum.Font.GothamMedium, TextSize = 13,
+	TextColor3 = P.text,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(1, -32, 0, 20),
+	Position = UDim2.new(0, 16, 0, 56),
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = setPanel,
+})
+
+local themes = {
+	{name = "Default", col = Color3.fromRGB(130, 72, 255)},
+	{name = "Fatality", col = Color3.fromRGB(197, 26, 68)},
+	{name = "Discord", col = Color3.fromRGB(88, 101, 242)},
+	{name = "Ubuntu", col = Color3.fromRGB(223, 75, 22)},
+	{name = "Mint", col = Color3.fromRGB(52, 211, 153)},
+	{name = "Crimson", col = Color3.fromRGB(220, 20, 60)},
+}
+
+for i, t in ipairs(themes) do
+	local y = 80 + ((i-1) * 28)
+	local b = make("TextButton", {
+		Text = "   " .. t.name,
+		Font = Enum.Font.Gotham, TextSize = 12,
+		TextColor3 = P.text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Size = UDim2.new(1, -32, 0, 24),
+		Position = UDim2.new(0, 16, 0, y),
+		BackgroundColor3 = P.bgLight,
+		AutoButtonColor = false,
+		Parent = setPanel,
+	})
+	corner(b, 6)
+	
+	local sq = make("Frame", {
+		Size = UDim2.new(0, 12, 0, 12),
+		Position = UDim2.new(1, -20, 0.5, -6),
+		BackgroundColor3 = t.col,
+		Parent = b,
+	})
+	corner(sq, 4)
+
+	b.MouseEnter:Connect(function() tw(b, {BackgroundColor3 = P.bgHover}, 0.15) end)
+	b.MouseLeave:Connect(function() tw(b, {BackgroundColor3 = P.bgLight}, 0.15) end)
+	b.MouseButton1Click:Connect(function()
+		updateAccent(t.col)
+		notify("Theme set to " .. t.name, "success")
+	end)
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  FEATURE  IMPLEMENTATIONS                ║
+-- ╚═══════════════════════════════════════════╝
+
+-- ── FLY ─────────────────────────────────────
+local function stopFly()
+	S.flying = false
+	if S.flyConn then S.flyConn:Disconnect(); S.flyConn = nil end
+	local hum = getHum()
+	if hum then hum.PlatformStand = false end
+	local hrp = getHRP()
+	if hrp then
+		local bv = hrp:FindFirstChild("_AdminBV")
+		local bg = hrp:FindFirstChild("_AdminBG")
+		if bv then bv:Destroy() end
+		if bg then bg:Destroy() end
+	end
+end
+
+local function startFly()
+	local hrp = getHRP()
+	local hum = getHum()
+	if not hrp or not hum then return false end
+
+	stopFly() -- clean slate
+
+	local bv = Instance.new("BodyVelocity")
+	bv.Name = "_AdminBV"
+	bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+	bv.Velocity = Vector3.zero
+	bv.Parent = hrp
+
+	local bg = Instance.new("BodyGyro")
+	bg.Name = "_AdminBG"
+	bg.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+	bg.P = 9e4
+	bg.CFrame = hrp.CFrame
+	bg.Parent = hrp
+
+	S.flying = true
+	hum.PlatformStand = true
+
+	S.flyConn = conn(RunService.RenderStepped:Connect(function()
+		if not S.flying then return end
+		if not hrp or not hrp.Parent then stopFly(); return end
+		local bv2 = hrp:FindFirstChild("_AdminBV")
+		local bg2 = hrp:FindFirstChild("_AdminBG")
+		if not bv2 or not bg2 then stopFly(); return end
+
+		if input:IsFocused() then
+			bv2.Velocity = Vector3.zero
+			return
+		end
+
+		local cam = Camera.CFrame
+		local dir = Vector3.zero
+		if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.LookVector end
+		if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.LookVector end
+		if UIS:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.RightVector end
+		if UIS:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.RightVector end
+		if UIS:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.yAxis end
+		if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.yAxis end
+
+		bv2.Velocity = dir.Magnitude > 0 and dir.Unit * S.flySpeed or Vector3.zero
+		bg2.CFrame = cam
+	end))
+	return true
+end
+
+-- ── CFLY ────────────────────────────────────
+local function stopCFly()
+	S.cflying = false
+	if S.cflyConn then S.cflyConn:Disconnect(); S.cflyConn = nil end
+	local hum = getHum()
+	if hum then hum.PlatformStand = false end
+	local hrp = getHRP()
+	if hrp then hrp.Anchored = false end
+end
+
+local function startCFly()
+	local hrp = getHRP()
+	local hum = getHum()
+	if not hrp or not hum then return false end
+
+	stopCFly()
+	stopFly() -- conflict
+
+	S.cflying = true
+	hum.PlatformStand = true
+	hrp.Anchored = true
+
+	S.cflyConn = conn(RunService.Heartbeat:Connect(function(dt)
+		if not S.cflying then return end
+		if not hrp or not hrp.Parent then stopCFly(); return end
+
+		if input:IsFocused() then return end
+
+		local cam = Camera.CFrame
+		local dir = Vector3.zero
+		if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.LookVector end
+		if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.LookVector end
+		if UIS:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.RightVector end
+		if UIS:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.RightVector end
+		if UIS:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.yAxis end
+		if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.yAxis end
+
+		local newPos = hrp.Position
+		if dir.Magnitude > 0 then
+			newPos = newPos + (dir.Unit * S.cflySpeed * dt)
+		end
+		
+		hrp.CFrame = CFrame.lookAt(newPos, newPos + cam.LookVector)
+	end))
+	return true
+end
+
+-- ── CWS ─────────────────────────────────────
+local function stopCWS()
+	S.cwsOn = false
+	if S.cwsConn then S.cwsConn:Disconnect(); S.cwsConn = nil end
+end
+
+local function startCWS()
+	stopCWS()
+	S.cwsOn = true
+	S.cwsConn = conn(RunService.RenderStepped:Connect(function(dt)
+		local hrp = getHRP()
+		local hum = getHum()
+		if not hrp or not hum or hum.MoveDirection.Magnitude == 0 then return end
+		if input:IsFocused() then return end
+		
+		hrp.CFrame = hrp.CFrame + (hum.MoveDirection * S.cwsSpeed * dt)
+	end))
+end
+
+-- ── INFJUMP ─────────────────────────────────
+local function stopInfJump()
+	S.infJumpOn = false
+	if S.infJumpConn then S.infJumpConn:Disconnect(); S.infJumpConn = nil end
+end
+
+local function startInfJump()
+	stopInfJump()
+	S.infJumpOn = true
+	S.infJumpConn = conn(UIS.JumpRequest:Connect(function()
+		if not S.infJumpOn then return end
+		local hum = getHum()
+		if hum then
+			hum:ChangeState(Enum.HumanoidStateType.Jumping)
+		end
+	end))
+end
+
+-- ── FREECAM ─────────────────────────────────
+local freecamYaw, freecamPitch = 0, 0
+
+local function stopFreecam()
+	S.freecamOn = false
+	if S.freecamConn then S.freecamConn:Disconnect(); S.freecamConn = nil end
+	Camera.CameraType = Enum.CameraType.Custom
+	UIS.MouseBehavior = Enum.MouseBehavior.Default
+	local hrp = getHRP()
+	if hrp and S.origFCAnchored ~= nil then hrp.Anchored = S.origFCAnchored end
+end
+
+local function startFreecam()
+	local hrp = getHRP()
+	if not hrp then return false end
+	stopFreecam()
+	
+	S.freecamOn = true
+	S.origFCAnchored = hrp.Anchored
+	hrp.Anchored = true
+	
+	Camera.CameraType = Enum.CameraType.Scriptable
+	local camCFrame = Camera.CFrame
+	local rx, ry, rz = camCFrame:ToOrientation()
+	freecamYaw = ry
+	freecamPitch = rx
+	
+	S.freecamConn = conn(RunService.RenderStepped:Connect(function(dt)
+		if not S.freecamOn then return end
+		
+		if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+			UIS.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+			local delta = UIS:GetMouseDelta()
+			freecamYaw = freecamYaw - delta.X * 0.005
+			freecamPitch = math.clamp(freecamPitch - delta.Y * 0.005, -math.rad(89), math.rad(89))
+		else
+			UIS.MouseBehavior = Enum.MouseBehavior.Default
+		end
+		
+		camCFrame = CFrame.new(camCFrame.Position) * CFrame.Angles(0, freecamYaw, 0) * CFrame.Angles(freecamPitch, 0, 0)
+		
+		if not input:IsFocused() then
+			local dir = Vector3.zero
+			if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + camCFrame.LookVector end
+			if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - camCFrame.LookVector end
+			if UIS:IsKeyDown(Enum.KeyCode.A) then dir = dir - camCFrame.RightVector end
+			if UIS:IsKeyDown(Enum.KeyCode.D) then dir = dir + camCFrame.RightVector end
+			if UIS:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.yAxis end
+			if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.yAxis end
+			
+			if dir.Magnitude > 0 then
+				camCFrame = camCFrame + (dir.Unit * 80 * dt)
+			end
+		end
+		Camera.CFrame = camCFrame
+	end))
+	return true
+end
+
+-- ── FLING ───────────────────────────────────
+local function stopFling()
+	S.flinging = false
+	if S.flingConn then S.flingConn:Disconnect(); S.flingConn = nil end
+	local hrp = getHRP()
+	if hrp then
+		local bav = hrp:FindFirstChild("_AdminFlingBAV")
+		if bav then bav:Destroy() end
+		hrp.Velocity = Vector3.zero
+	end
+end
+
+local function startFling(target)
+	local hrp = getHRP()
+	if not hrp then return end
+	if not target or not target.Character then return end
+	
+	stopFling()
+	S.flinging = true
+	
+	local oldPos = hrp.CFrame
+	
+	local bav = Instance.new("BodyAngularVelocity")
+	bav.Name = "_AdminFlingBAV"
+	bav.AngularVelocity = Vector3.new(99999, 99999, 99999)
+	bav.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+	bav.Parent = hrp
+	
+	local t = 0
+	S.flingConn = conn(RunService.Heartbeat:Connect(function(dt)
+		if not S.flinging then return end
+		local targetHrp = target.Character:FindFirstChild("HumanoidRootPart")
+		if not targetHrp then stopFling(); return end
+		
+		t = t + dt * 30
+		local offset = Vector3.new(math.sin(t) * 2, math.cos(t) * 2, math.sin(t*0.5) * 2)
+		
+		hrp.Velocity = Vector3.new(10000, 10000, 10000)
+		hrp.CFrame = CFrame.new(targetHrp.Position + offset)
+	end))
+	
+	task.delay(4, function()
+		if S.flinging then
+			stopFling()
+			if hrp then hrp.CFrame = oldPos end
+			notify("Fling attempt ended", "info")
+		end
+	end)
+end
+
+-- ── ANTIFLING ───────────────────────────────
+local function stopAntiFling()
+	S.antiflingOn = false
+	if S.antiflingConn then S.antiflingConn:Disconnect(); S.antiflingConn = nil end
+end
+
+local function startAntiFling()
+	stopAntiFling()
+	S.antiflingOn = true
+	S.antiflingConn = conn(RunService.Stepped:Connect(function()
+		if not S.antiflingOn then return end
+		local lpChar = getChar()
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LP and plr.Character then
+				for _, part in ipairs(plr.Character:GetDescendants()) do
+					if part:IsA("BasePart") then
+						part.CanCollide = false
+					end
+				end
+			end
+		end
+	end))
+end
+
+-- ── CHAT ────────────────────────────────────
+local function sendChat(msg)
+	local tcs = game:GetService("TextChatService")
+	local rs = game:GetService("ReplicatedStorage")
+	if tcs.ChatVersion == Enum.ChatVersion.TextChatService then
+		local ch = tcs.TextChannels:FindFirstChild("RBXGeneral")
+		if ch then ch:SendAsync(msg) end
+	else
+		local events = rs:FindFirstChild("DefaultChatSystemChatEvents")
+		if events then
+			local say = events:FindFirstChild("SayMessageRequest")
+			if say then say:FireServer(msg, "All") end
+		end
+	end
+end
+
+-- ── NOCLIP ──────────────────────────────────
+local function stopNoclip()
+	S.noclipping = false
+	if S.noclipConn then S.noclipConn:Disconnect(); S.noclipConn = nil end
+end
+
+local function startNoclip()
+	stopNoclip()
+	S.noclipping = true
+	S.noclipConn = conn(RunService.Stepped:Connect(function()
+		local char = getChar()
+		if not char then return end
+		for _, p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") then p.CanCollide = false end
+		end
+	end))
+end
+
+-- ── GOD MODE ────────────────────────────────
+local function stopGod()
+	S.godmode = false
+	if S.godConn then S.godConn:Disconnect(); S.godConn = nil end
+end
+
+local function startGod()
+	stopGod()
+	S.godmode = true
+	S.godConn = conn(RunService.Heartbeat:Connect(function()
+		local hum = getHum()
+		if hum then hum.Health = hum.MaxHealth end
+	end))
+end
+
+-- ── INVISIBILITY ────────────────────────────
+local function setInvis(on)
+	local char = getChar()
+	if not char then return end
+
+	if on then
+		S.invisible = true
+		S.origTransp = {}
+		for _, p in ipairs(char:GetDescendants()) do
+			if p:IsA("BasePart") or p:IsA("Decal") or p:IsA("Texture") then
+				S.origTransp[p] = p.Transparency
+				p.Transparency = 1
+			end
+		end
+	else
+		S.invisible = false
+		for p, t in pairs(S.origTransp) do
+			if p and p.Parent then p.Transparency = t end
+		end
+		S.origTransp = {}
+	end
+end
+
+-- ── ESP ─────────────────────────────────────
+local function clearESP()
+	S.espOn = false
+	for _, c in ipairs(S.espConns) do pcall(function() c:Disconnect() end) end
+	S.espConns = {}
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LP and plr.Character then
+			local h = plr.Character:FindFirstChild("_AESP")
+			local b = plr.Character:FindFirstChild("_AESPName")
+			if h then h:Destroy() end
+			if b then b:Destroy() end
+		end
+	end
+end
+
+local function espPlayer(plr)
+	if plr == LP then return end
+
+	local function onChar(char)
+		task.wait(0.3)
+		if not S.espOn or not char or not char.Parent then return end
+		-- remove old
+		local old = char:FindFirstChild("_AESP")
+		if old then old:Destroy() end
+		local oldb = char:FindFirstChild("_AESPName")
+		if oldb then oldb:Destroy() end
+
+		local hl = Instance.new("Highlight")
+		hl.Name = "_AESP"
+		hl.FillColor = P.accent
+		hl.FillTransparency = 0.65
+		hl.OutlineColor = Color3.new(1, 1, 1)
+		hl.OutlineTransparency = 0
+		hl.Parent = char
+
+		local head = char:FindFirstChild("Head")
+		if head then
+			local bb = Instance.new("BillboardGui")
+			bb.Name = "_AESPName"
+			bb.Size = UDim2.new(0, 140, 0, 28)
+			bb.StudsOffset = Vector3.new(0, 2.8, 0)
+			bb.AlwaysOnTop = true
+			bb.Adornee = head
+			bb.Parent = char
+			local lbl = Instance.new("TextLabel")
+			lbl.Size = UDim2.new(1, 0, 1, 0)
+			lbl.BackgroundTransparency = 1
+			lbl.Text = plr.DisplayName
+			lbl.TextColor3 = Color3.new(1, 1, 1)
+			lbl.TextStrokeTransparency = 0.3
+			lbl.Font = Enum.Font.GothamBold
+			lbl.TextSize = 14
+			lbl.TextScaled = false
+			lbl.Parent = bb
+		end
+	end
+
+	if plr.Character then onChar(plr.Character) end
+	local c = plr.CharacterAdded:Connect(function(ch)
+		if S.espOn then onChar(ch) end
+	end)
+	table.insert(S.espConns, c)
+end
+
+local function enableESP()
+	clearESP()
+	S.espOn = true
+	for _, plr in ipairs(Players:GetPlayers()) do espPlayer(plr) end
+	local c = Players.PlayerAdded:Connect(function(plr)
+		if S.espOn then espPlayer(plr) end
+	end)
+	table.insert(S.espConns, c)
+end
+
+-- ── FULLBRIGHT ──────────────────────────────
+local function setFullbright(on)
+	if on then
+		S.fullbright = true
+		S.origLighting = {
+			Brightness      = Lighting.Brightness,
+			ClockTime       = Lighting.ClockTime,
+			FogEnd          = Lighting.FogEnd,
+			FogStart        = Lighting.FogStart,
+			GlobalShadows   = Lighting.GlobalShadows,
+			Ambient         = Lighting.Ambient,
+			OutdoorAmbient  = Lighting.OutdoorAmbient,
+		}
+		Lighting.Brightness     = 2
+		Lighting.ClockTime      = 14
+		Lighting.FogEnd         = 1e6
+		Lighting.FogStart       = 1e6
+		Lighting.GlobalShadows  = false
+		Lighting.Ambient        = Color3.fromRGB(178, 178, 178)
+		Lighting.OutdoorAmbient = Color3.fromRGB(178, 178, 178)
+
+		S.hiddenEffects = {}
+		for _, e in ipairs(Lighting:GetChildren()) do
+			if e:IsA("Atmosphere") or e:IsA("BloomEffect") or e:IsA("BlurEffect")
+				or e:IsA("ColorCorrectionEffect") or e:IsA("SunRaysEffect") then
+				table.insert(S.hiddenEffects, {e, e.Enabled})
+				e.Enabled = false
+			end
+		end
+	else
+		S.fullbright = false
+		local o = S.origLighting
+		if o.Brightness then
+			Lighting.Brightness     = o.Brightness
+			Lighting.ClockTime      = o.ClockTime
+			Lighting.FogEnd         = o.FogEnd
+			Lighting.FogStart       = o.FogStart
+			Lighting.GlobalShadows  = o.GlobalShadows
+			Lighting.Ambient        = o.Ambient
+			Lighting.OutdoorAmbient = o.OutdoorAmbient
+		end
+		for _, d in ipairs(S.hiddenEffects) do
+			if d[1] and d[1].Parent then d[1].Enabled = d[2] end
+		end
+		S.hiddenEffects = {}
+	end
+end
+
+-- ── SPIN ────────────────────────────────────
+local function stopSpin()
+	S.spinning = false
+	local hrp = getHRP()
+	if hrp then
+		local bav = hrp:FindFirstChild("_AdminSpin")
+		if bav then bav:Destroy() end
+	end
+end
+
+local function startSpin()
+	local hrp = getHRP()
+	if not hrp then return end
+	stopSpin()
+	S.spinning = true
+
+	local bav = Instance.new("BodyAngularVelocity")
+	bav.Name = "_AdminSpin"
+	bav.AngularVelocity = Vector3.new(0, S.spinSpeed, 0)
+	bav.MaxTorque = Vector3.new(0, 1e9, 0)
+	bav.Parent = hrp
+end
+
+-- ── CHARACTER SCALE ─────────────────────────
+local function setScale(s)
+	local hum = getHum()
+	if not hum then return false end
+	local names = {"BodyDepthScale", "BodyHeightScale", "BodyWidthScale", "HeadScale"}
+	local ok = false
+	for _, n in ipairs(names) do
+		local sv = hum:FindFirstChild(n)
+		if sv and sv:IsA("NumberValue") then sv.Value = s; ok = true end
+	end
+	return ok
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  COMMAND DEFINITIONS                      ║
+-- ╚═══════════════════════════════════════════╝
+local CMDS = {} -- filled below
+local CMD_LOOKUP = {} -- name/alias → cmd entry
+
+local function defCmd(name, aliases, args, desc, cat, fn)
+	local entry = {name = name, aliases = aliases, args = args, desc = desc, category = cat, callback = fn}
+	table.insert(CMDS, entry)
+	CMD_LOOKUP[name:lower()] = entry
+	for _, a in ipairs(aliases) do CMD_LOOKUP[a:lower()] = entry end
+end
+
+-- ── MOVEMENT ────────────────────────────────
+defCmd("fly", {}, "[speed]", "Toggle fly  (WASD + Space/Shift)", "Movement", function(a)
+	if #a > 0 then
+		local spd = tonumber(a[1])
+		if spd then S.flySpeed = math.clamp(spd, 1, 1000) end
+		if not S.flying then
+			if startFly() then notify("Fly ON  (speed " .. S.flySpeed .. ")", "success")
+			else notify("No character", "error") end
+		else
+			notify("Fly speed → " .. S.flySpeed, "success")
+		end
+	else
+		if S.flying then
+			stopFly(); notify("Fly OFF", "info")
+		else
+			if startFly() then notify("Fly ON  (speed " .. S.flySpeed .. ")", "success")
+			else notify("No character", "error") end
+		end
+	end
+end)
+
+defCmd("unfly", {}, "", "Disable fly", "Movement", function()
+	stopFly(); notify("Fly OFF", "info")
+end)
+
+defCmd("cfly", {"cframefly"}, "[speed]", "Toggle CFrame fly", "Movement", function(a)
+	if #a > 0 then
+		local spd = tonumber(a[1])
+		if spd then S.cflySpeed = math.clamp(spd, 1, 5000) end
+		if not S.cflying then
+			if startCFly() then notify("CFly ON  (speed " .. S.cflySpeed .. ")", "success")
+			else notify("No character", "error") end
+		else
+			notify("CFly speed → " .. S.cflySpeed, "success")
+		end
+	else
+		if S.cflying then
+			stopCFly(); notify("CFly OFF", "info")
+		else
+			if startCFly() then notify("CFly ON  (speed " .. S.cflySpeed .. ")", "success")
+			else notify("No character", "error") end
+		end
+	end
+end)
+
+defCmd("uncfly", {}, "", "Disable CFly", "Movement", function()
+	stopCFly(); notify("CFly OFF", "info")
+end)
+
+defCmd("cws", {"cframews"}, "[speed]", "Toggle CFrame WalkSpeed", "Movement", function(a)
+	if #a > 0 then
+		local spd = tonumber(a[1])
+		if spd then S.cwsSpeed = math.clamp(spd, 1, 5000) end
+		if not S.cwsOn then
+			startCWS(); notify("CWS ON  (speed " .. S.cwsSpeed .. ")", "success")
+		else
+			notify("CWS speed → " .. S.cwsSpeed, "success")
+		end
+	else
+		if S.cwsOn then
+			stopCWS(); notify("CWS OFF", "info")
+		else
+			startCWS(); notify("CWS ON  (speed " .. S.cwsSpeed .. ")", "success")
+		end
+	end
+end)
+
+defCmd("uncws", {}, "", "Disable CWS", "Movement", function()
+	stopCWS(); notify("CWS OFF", "info")
+end)
+
+defCmd("infjump", {"ij"}, "", "Toggle infinite jump", "Movement", function()
+	if S.infJumpOn then
+		stopInfJump(); notify("InfJump OFF", "info")
+	else
+		startInfJump(); notify("InfJump ON", "success")
+	end
+end)
+
+defCmd("uninfjump", {"unij"}, "", "Disable infjump", "Movement", function()
+	stopInfJump(); notify("InfJump OFF", "info")
+end)
+
+defCmd("speed", {"ws", "walkspeed"}, "[value]", "Set WalkSpeed  (default 16)", "Movement", function(a)
+	local hum = getHum()
+	if not hum then notify("No character", "error"); return end
+	local v = tonumber(a[1]) or 16
+	v = math.clamp(v, 0, 2000)
+	hum.WalkSpeed = v
+	S.customWS = v
+	notify("WalkSpeed → " .. v, "success")
+end)
+
+defCmd("jump", {"jh", "jumpheight"}, "[value]", "Set JumpHeight  (default 7.2)", "Movement", function(a)
+	local hum = getHum()
+	if not hum then notify("No character", "error"); return end
+	local v = tonumber(a[1]) or 7.2
+	v = math.clamp(v, 0, 1000)
+	hum.UseJumpPower = false
+	hum.JumpHeight = v
+	S.customJH = v
+	notify("JumpHeight → " .. v, "success")
+end)
+
+defCmd("noclip", {"nc"}, "", "Toggle noclip", "Movement", function()
+	if S.noclipping then
+		stopNoclip(); notify("Noclip OFF", "info")
+	else
+		startNoclip(); notify("Noclip ON", "success")
+	end
+end)
+
+defCmd("clip", {}, "", "Disable noclip", "Movement", function()
+	stopNoclip(); notify("Noclip OFF", "info")
+end)
+
+defCmd("antifling", {"noclipothers", "nco"}, "", "Disable player collisions", "Movement", function()
+	if S.antiflingOn then
+		stopAntiFling(); notify("AntiFling OFF", "info")
+	else
+		startAntiFling(); notify("AntiFling ON", "success")
+	end
+end)
+
+defCmd("unantifling", {"unnco"}, "", "Enable player collisions", "Movement", function()
+	stopAntiFling(); notify("AntiFling OFF", "info")
+end)
+
+defCmd("tp", {"teleport"}, "", "Teleport to mouse cursor", "Movement", function()
+	local hrp = getHRP()
+	if not hrp then notify("No character", "error"); return end
+	local hit = Mouse.Hit
+	if hit then
+		hrp.CFrame = CFrame.new(hit.Position + Vector3.new(0, 4, 0))
+		notify("Teleported", "success")
+	end
+end)
+
+defCmd("to", {"goto"}, "<player>", "Teleport to player", "Movement", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+		local hrp = getHRP()
+		if hrp then
+			hrp.CFrame = target.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 3)
+			notify("Teleported to " .. target.DisplayName, "success")
+		end
+	else
+		notify("Player not found", "error")
+	end
+end)
+
+defCmd("freecam", {"fc"}, "", "Toggle freecam", "Visual", function()
+	if S.freecamOn then
+		stopFreecam(); notify("Freecam OFF", "info")
+	else
+		if startFreecam() then notify("Freecam ON", "success") end
+	end
+end)
+
+defCmd("unfreecam", {"unfc"}, "", "Disable freecam", "Visual", function()
+	stopFreecam(); notify("Freecam OFF", "info")
+end)
+
+defCmd("fling", {}, "<player>", "Fling target for 4s", "Trolling", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if target then
+		notify("Flinging " .. target.DisplayName .. "...", "warning")
+		startFling(target)
+	else
+		notify("Player not found", "error")
+	end
+end)
+
+-- ── CHARACTER ───────────────────────────────
+defCmd("god", {"godmode"}, "", "Toggle god mode", "Character", function()
+	if S.godmode then
+		stopGod(); notify("God mode OFF", "info")
+	else
+		startGod(); notify("God mode ON", "success")
+	end
+end)
+
+defCmd("ungod", {}, "", "Disable god mode", "Character", function()
+	stopGod(); notify("God mode OFF", "info")
+end)
+
+defCmd("heal", {}, "", "Heal to max HP", "Character", function()
+	local hum = getHum()
+	if hum then hum.Health = hum.MaxHealth; notify("Healed", "success")
+	else notify("No character", "error") end
+end)
+
+defCmd("kill", {"die"}, "", "Kill yourself", "Character", function()
+	if S.godmode then stopGod() end -- override god so kill works
+	local hum = getHum()
+	if hum then hum.Health = 0; notify("Killed", "info")
+	else notify("No character", "error") end
+end)
+
+defCmd("reset", {"re"}, "", "Reset character", "Character", function()
+	if S.godmode then stopGod() end
+	local hum = getHum()
+	if hum then
+		hum.Health = 0
+		notify("Resetting…", "info")
+	end
+end)
+
+defCmd("sit", {}, "", "Toggle sit", "Character", function()
+	local hum = getHum()
+	if not hum then notify("No character", "error"); return end
+	if hum.Sit then
+		hum.Sit = false
+		hum.Jump = true
+		notify("Standing", "info")
+	else
+		hum.Sit = true
+		notify("Sitting", "success")
+	end
+end)
+
+defCmd("invis", {"invisible"}, "", "Toggle invisibility", "Character", function()
+	if S.invisible then
+		setInvis(false); notify("Visible", "info")
+	else
+		setInvis(true); notify("Invisible", "success")
+	end
+end)
+
+defCmd("vis", {"visible"}, "", "Become visible", "Character", function()
+	setInvis(false); notify("Visible", "info")
+end)
+
+-- ── APPEARANCE ──────────────────────────────
+defCmd("tiny", {"small"}, "", "Shrink character (0.5×)", "Appearance", function()
+	if setScale(0.5) then notify("Tiny mode", "success")
+	else notify("R15 only", "warning") end
+end)
+
+defCmd("big", {"giant"}, "", "Grow character (3×)", "Appearance", function()
+	if setScale(3) then notify("Big mode", "success")
+	else notify("R15 only", "warning") end
+end)
+
+defCmd("normal", {"resetscale"}, "", "Reset character scale", "Appearance", function()
+	if setScale(1) then notify("Scale reset", "info")
+	else notify("R15 only", "warning") end
+end)
+
+defCmd("spin", {}, "[speed]", "Toggle spin  (default 20)", "Appearance", function(a)
+	if #a > 0 then
+		local spd = tonumber(a[1])
+		if spd then S.spinSpeed = math.clamp(spd, 1, 200) end
+		if not S.spinning then
+			startSpin(); notify("Spinning  (speed " .. S.spinSpeed .. ")", "success")
+		else
+			-- update live
+			local hrp = getHRP()
+			if hrp then
+				local bav = hrp:FindFirstChild("_AdminSpin")
+				if bav then bav.AngularVelocity = Vector3.new(0, S.spinSpeed, 0) end
+			end
+			notify("Spin speed → " .. S.spinSpeed, "success")
+		end
+	else
+		if S.spinning then
+			stopSpin(); notify("Spin OFF", "info")
+		else
+			startSpin(); notify("Spinning  (speed " .. S.spinSpeed .. ")", "success")
+		end
+	end
+end)
+
+defCmd("unspin", {}, "", "Stop spinning", "Appearance", function()
+	stopSpin(); notify("Spin OFF", "info")
+end)
+
+defCmd("hh", {"hipheight"}, "[value]", "Set hip height  (float effect)", "Appearance", function(a)
+	local hum = getHum()
+	if not hum then notify("No character", "error"); return end
+	local v = tonumber(a[1]) or 0
+	hum.HipHeight = math.clamp(v, -10, 200)
+	notify("HipHeight → " .. hum.HipHeight, "success")
+end)
+
+-- ── VISUAL ──────────────────────────────────
+defCmd("fov", {}, "[value]", "Set field of view  (default 70)", "Visual", function(a)
+	local v = tonumber(a[1]) or 70
+	Camera.FieldOfView = math.clamp(v, 1, 120)
+	notify("FOV → " .. Camera.FieldOfView, "success")
+end)
+
+defCmd("fullbright", {"fb"}, "", "Toggle fullbright", "Visual", function()
+	if S.fullbright then
+		setFullbright(false); notify("Fullbright OFF", "info")
+	else
+		setFullbright(true); notify("Fullbright ON", "success")
+	end
+end)
+
+defCmd("esp", {}, "", "Toggle player ESP", "Visual", function()
+	if S.espOn then
+		clearESP(); notify("ESP OFF", "info")
+	else
+		enableESP(); notify("ESP ON", "success")
+	end
+end)
+
+defCmd("unesp", {}, "", "Disable ESP", "Visual", function()
+	clearESP(); notify("ESP OFF", "info")
+end)
+
+-- ── UTILITY ─────────────────────────────────
+defCmd("cmds", {"commands", "help"}, "", "Toggle commands list", "Utility", function()
+	-- handled specially after execute
+end)
+
+defCmd("chat", {"say"}, "<msg>", "Send a chat message", "Utility", function(a)
+	if #a == 0 then notify("Provide a message", "error"); return end
+	local msg = table.concat(a, " ")
+	sendChat(msg)
+	notify("Message sent", "success")
+end)
+
+defCmd("rejoin", {"rj"}, "", "Rejoin current server", "Utility", function()
+	notify("Rejoining…", "warning")
+	task.wait(0.5)
+	TeleportService:Teleport(game.PlaceId, LP)
+end)
+
+defCmd("settings", {"menu"}, "", "Open settings panel", "Utility", function()
+	setPanel.Visible = true
+	tw(setPanel, {Size = UDim2.new(0, 260, 0, 260)}, 0.35)
+end)
+
+defCmd("unload", {}, "", "Unload the script", "Utility", function()
+	notify("Unloading...", "warning")
+	task.delay(0.5, function()
+		if _G._AdminCleanup then _G._AdminCleanup() end
+	end)
+end)
+
+defCmd("serverhop", {"hop"}, "", "Join a different server", "Utility", function()
+	notify("Finding server...", "info")
+	local req = (request or http_request or (syn and syn.request))
+	if req then
+		pcall(function()
+			local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&limit=100"
+			local res = req({Url = url, Method = "GET"})
+			if res and res.Body then
+				local data = game:GetService("HttpService"):JSONDecode(res.Body)
+				if data and data.data then
+					for _, v in ipairs(data.data) do
+						if v.id ~= game.JobId and v.playing < v.maxPlayers then
+							notify("Hopping...", "success")
+							TeleportService:TeleportToPlaceInstance(game.PlaceId, v.id, LP)
+							return
+						end
+					end
+				end
+			end
+		end)
+	end
+	notify("Fallback teleport...", "warning")
+	TeleportService:Teleport(game.PlaceId, LP)
+end)
+
+defCmd("fps", {}, "", "Toggle FPS counter", "Utility", function()
+	S.showFps = not S.showFps
+	fpsLabel.Visible = S.showFps
+	notify(S.showFps and "FPS counter ON" or "FPS counter OFF", S.showFps and "success" or "info")
+end)
+
+defCmd("coords", {"pos", "position"}, "", "Toggle coordinates", "Utility", function()
+	S.showCoords = not S.showCoords
+	coordsLabel.Visible = S.showCoords
+	notify(S.showCoords and "Coords ON" or "Coords OFF", S.showCoords and "success" or "info")
+end)
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  POPULATE COMMANDS PANEL                  ║
+-- ╚═══════════════════════════════════════════╝
+do
+	local order = {"Movement", "Character", "Appearance", "Visual", "Trolling", "Utility"}
+	local lo = 0
+	for _, cat in ipairs(order) do
+		lo = lo + 1
+		-- category header
+		local sep = make("Frame", {
+			Size = UDim2.new(1, 0, 0, 26),
+			BackgroundTransparency = 1,
+			LayoutOrder = lo,
+			Parent = panelScroll,
+		})
+		local seplabel = make("TextLabel", {
+			Text = "─  " .. cat:upper() .. "  ─",
+			Font = Enum.Font.GothamBold, TextSize = 10,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 1, 0),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Parent = sep,
+		})
+		bindAccent(seplabel, "TextColor3")
+
+		for _, cmd in ipairs(CMDS) do
+			if cmd.category == cat then
+				lo = lo + 1
+				local row = make("Frame", {
+					Size = UDim2.new(1, 0, 0, 32),
+					BackgroundColor3 = P.bgLight,
+					BackgroundTransparency = 1,
+					LayoutOrder = lo,
+					Parent = panelScroll,
+				})
+				corner(row, 6)
+
+				-- hover effect
+				row.InputBegan:Connect(function(i)
+					if i.UserInputType == Enum.UserInputType.MouseMovement then
+						tw(row, {BackgroundTransparency = 0.3}, 0.15)
+					end
+				end)
+				row.InputEnded:Connect(function(i)
+					if i.UserInputType == Enum.UserInputType.MouseMovement then
+						tw(row, {BackgroundTransparency = 1}, 0.15)
+					end
+				end)
+
+				local usage = cmd.name
+				if cmd.args ~= "" then usage = usage .. "  " .. cmd.args end
+				local aliases = ""
+				if #cmd.aliases > 0 then aliases = "  (" .. table.concat(cmd.aliases, ", ") .. ")" end
+
+				make("TextLabel", {
+					Text = usage .. aliases,
+					Font = Enum.Font.GothamMedium, TextSize = 12,
+					TextColor3 = P.text,
+					BackgroundTransparency = 1,
+					Size = UDim2.new(1, -8, 0, 15),
+					Position = UDim2.new(0, 8, 0, 2),
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextTruncate = Enum.TextTruncate.AtEnd,
+					Parent = row,
+				})
+				make("TextLabel", {
+					Text = cmd.desc,
+					Font = Enum.Font.Gotham, TextSize = 11,
+					TextColor3 = P.dim,
+					BackgroundTransparency = 1,
+					Size = UDim2.new(1, -8, 0, 14),
+					Position = UDim2.new(0, 8, 0, 16),
+					TextXAlignment = Enum.TextXAlignment.Left,
+					TextTruncate = Enum.TextTruncate.AtEnd,
+					Parent = row,
+				})
+			end
+		end
+	end
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  COMMAND  EXECUTION                       ║
+-- ╚═══════════════════════════════════════════╝
+local function execCmd(raw)
+	-- strip leading ;
+	if raw:sub(1, 1) == ";" then raw = raw:sub(2) end
+	raw = raw:match("^%s*(.-)%s*$") -- trim
+	if raw == "" then return end
+
+	local parts = {}
+	for w in raw:gmatch("%S+") do table.insert(parts, w) end
+	local name = parts[1]:lower()
+	local args = {}
+	for i = 2, #parts do table.insert(args, parts[i]) end
+
+	local entry = CMD_LOOKUP[name]
+	if not entry then
+		notify("Unknown command: " .. name, "error")
+		return
+	end
+
+	-- special: cmds toggles panel
+	if entry.name == "cmds" then
+		S.panelOpen = not S.panelOpen
+		tw(panel, {Position = S.panelOpen and PANEL_SHOWN or PANEL_HIDDEN}, 0.4)
+		return
+	end
+
+	entry.callback(args)
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  SUGGESTION SYSTEM                        ║
+-- ╚═══════════════════════════════════════════╝
+local MAX_SUGGESTIONS = 6
+
+local function updateSuggestions()
+	-- clear old
+	for _, ch in ipairs(sugFrame:GetChildren()) do
+		if ch:IsA("TextButton") then ch:Destroy() end
+	end
+
+	local query = input.Text
+	-- strip leading ;
+	if query:sub(1, 1) == ";" then query = query:sub(2) end
+	query = query:match("^%s*(.-)%s*$"):lower()
+
+	if query == "" then
+		sugFrame.Visible = false
+		return
+	end
+
+	local matches = {}
+	for _, cmd in ipairs(CMDS) do
+		-- match command name or aliases
+		local matched = false
+		if cmd.name:lower():sub(1, #query) == query then
+			matched = true
+		else
+			for _, a in ipairs(cmd.aliases) do
+				if a:lower():sub(1, #query) == query then matched = true; break end
+			end
+		end
+		if matched then
+			table.insert(matches, cmd)
+			if #matches >= MAX_SUGGESTIONS then break end
+		end
+	end
+
+	if #matches == 0 then
+		sugFrame.Visible = false
+		return
+	end
+
+	sugFrame.Visible = true
+	for i, cmd in ipairs(matches) do
+		local usage = cmd.name
+		if cmd.args ~= "" then usage = usage .. "  " .. cmd.args end
+
+		local btn = make("TextButton", {
+			Size = UDim2.new(1, 0, 0, 30),
+			BackgroundColor3 = P.bgLight,
+			BackgroundTransparency = 1,
+			AutoButtonColor = false,
+			LayoutOrder = i,
+			Parent = sugFrame,
+		})
+		corner(btn, 6)
+
+		make("TextLabel", {
+			Text = usage,
+			Font = Enum.Font.GothamMedium, TextSize = 13,
+			TextColor3 = P.text,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0.45, 0, 1, 0),
+			Position = UDim2.new(0, 10, 0, 0),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Parent = btn,
+		})
+		make("TextLabel", {
+			Text = cmd.desc,
+			Font = Enum.Font.Gotham, TextSize = 12,
+			TextColor3 = P.dim,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0.55, -14, 1, 0),
+			Position = UDim2.new(0.45, 0, 0, 0),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Parent = btn,
+		})
+
+		btn.MouseEnter:Connect(function() tw(btn, {BackgroundTransparency = 0.3}, 0.12) end)
+		btn.MouseLeave:Connect(function() tw(btn, {BackgroundTransparency = 1}, 0.12) end)
+		btn.MouseButton1Click:Connect(function()
+			input.Text = cmd.name .. " "
+			input:CaptureFocus()
+			-- move cursor to end (Roblox handles this automatically on CaptureFocus after text change)
+		end)
+	end
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  BAR OPEN / CLOSE                         ║
+-- ╚═══════════════════════════════════════════╝
+local suppressSemicolon = false
+
+local function openBar()
+	if S.barOpen then return end
+	S.barOpen = true
+	suppressSemicolon = true
+	input.Text = ""
+	sugFrame.Visible = false
+	tw(barWrap, {Position = BAR_Y_SHOWN}, 0.35)
+	-- wait for the animation to be underway before focusing
+	task.defer(function()
+		input:CaptureFocus()
+	end)
+end
+
+local function closeBar()
+	if not S.barOpen then return end
+	S.barOpen = false
+	input:ReleaseFocus()
+	sugFrame.Visible = false
+	tw(barWrap, {Position = BAR_Y_HIDDEN}, 0.3)
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  INPUT WIRING                             ║
+-- ╚═══════════════════════════════════════════╝
+-- open bar with ;
+conn(UIS.InputBegan:Connect(function(inp, gp)
+	if gp then return end
+	if inp.KeyCode == Enum.KeyCode.Semicolon then
+		if not S.barOpen then
+			openBar()
+		end
+	end
+end))
+
+-- suppress the ; that was used to OPEN the bar
+conn(input:GetPropertyChangedSignal("Text"):Connect(function()
+	if suppressSemicolon then
+		suppressSemicolon = false
+		if input.Text == ";" then
+			input.Text = ""
+			return
+		end
+	end
+	updateSuggestions()
+end))
+
+-- enter → execute, escape → close
+conn(input.FocusLost:Connect(function(enterPressed)
+	if enterPressed then
+		local raw = input.Text
+		closeBar()
+		-- small delay so bar animates out before side‑effects
+		task.defer(function()
+			execCmd(raw)
+		end)
+	else
+		-- lost focus without enter (clicked away / pressed escape)
+		closeBar()
+	end
+end))
+
+-- close commands panel
+conn(panelClose.MouseButton1Click:Connect(function()
+	S.panelOpen = false
+	tw(panel, {Position = PANEL_HIDDEN}, 0.35)
+end))
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  FPS + COORDS UPDATE LOOP                ║
+-- ╚═══════════════════════════════════════════╝
+do
+	local frames = 0
+	local elapsed = 0
+
+	conn(RunService.RenderStepped:Connect(function(dt)
+		-- FPS
+		frames = frames + 1
+		elapsed = elapsed + dt
+		if elapsed >= 0.5 then
+			if S.showFps then
+				fpsLabel.Text = "FPS: " .. math.floor(frames / elapsed + 0.5)
+			end
+			frames = 0
+			elapsed = 0
+		end
+
+		-- Coords
+		if S.showCoords then
+			local hrp = getHRP()
+			if hrp then
+				local p = hrp.Position
+				coordsLabel.Text = string.format("X: %.1f   Y: %.1f   Z: %.1f", p.X, p.Y, p.Z)
+			end
+		end
+	end))
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  RESPAWN HANDLING                         ║
+-- ╚═══════════════════════════════════════════╝
+conn(LP.CharacterAdded:Connect(function(char)
+	-- features that are invalid without the old character
+	stopFly()
+	stopCFly()
+	stopCWS()
+	stopInfJump()
+	stopNoclip()
+	stopAntiFling()
+	stopGod()
+	stopSpin()
+	S.invisible = false
+	S.origTransp = {}
+
+	-- wait for humanoid
+	local hum = char:WaitForChild("Humanoid", 10)
+	if not hum then return end
+
+	-- re-apply custom stats
+	task.delay(0.3, function()
+		local h = getHum()
+		if not h then return end
+		if S.customWS then h.WalkSpeed = S.customWS end
+		if S.customJH then h.UseJumpPower = false; h.JumpHeight = S.customJH end
+	end)
+
+	-- re-apply ESP highlights to self's new char isn't needed (ESP is on other players)
+end))
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  GLOBAL CLEANUP FUNCTION (for re-run)     ║
+-- ╚═══════════════════════════════════════════╝
+_G._AdminCleanup = function()
+	stopFly()
+	stopCFly()
+	stopCWS()
+	stopInfJump()
+	stopNoclip()
+	stopAntiFling()
+	stopGod()
+	stopSpin()
+	setInvis(false)
+	clearESP()
+	setFullbright(false)
+	for _, c in ipairs(_conns) do pcall(function() c:Disconnect() end) end
+	_conns = {}
+	if gui and gui.Parent then gui:Destroy() end
+end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  DONE                                     ║
+-- ╚═══════════════════════════════════════════╝
+notify("Admin loaded — press  ;  to open", "success")
+print("[FE Admin] Loaded successfully. Press ; to open the command bar.")
