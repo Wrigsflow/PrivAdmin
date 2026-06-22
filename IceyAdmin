@@ -150,6 +150,14 @@ local S = {
 	
 	antiAfkOn        = false,
 	antiAfkConn      = nil,
+
+	vflyOn           = false,
+	vflySpeed        = 50,
+	vflyConn         = nil,
+
+	loopKillOn       = false,
+	loopBringOn      = false,
+	walkFlingOn      = false,
 }
 
 -- forward declarations for functions needed across sections
@@ -719,6 +727,251 @@ for i, t in ipairs(themes) do
 		notify("Theme set to " .. t.name, "success")
 	end)
 end
+
+-- ╔═══════════════════════════════════════════╗
+-- ║  LUA EXECUTOR                             ║
+-- ╚═══════════════════════════════════════════╝
+local toggleExecutor
+local execToggleBtn
+do
+	local execOpen = false
+
+	-- ── Main panel ───────────────────────────────
+	local execPanel = make("Frame", {
+		Name                   = "ExecutorPanel",
+		Size                   = UDim2.new(0, 520, 0, 360),
+		Position               = UDim2.new(0.5, 0, 0.5, 0),
+		AnchorPoint            = Vector2.new(0.5, 0.5),
+		BackgroundColor3       = P.bg,
+		BackgroundTransparency = 0.04,
+		Visible                = false,
+		ClipsDescendants       = false,
+		Parent                 = gui,
+	})
+	corner(execPanel, 14)
+	stroke(execPanel, P.border, 1, 0.3)
+
+	-- header
+	local execHeader = make("Frame", {
+		Size             = UDim2.new(1, 0, 0, 44),
+		BackgroundTransparency = 1,
+		Parent           = execPanel,
+	})
+	make("TextLabel", {
+		Text                   = "Executor",
+		Font                   = Enum.Font.GothamMedium,
+		TextSize               = 14,
+		TextColor3             = P.text,
+		BackgroundTransparency = 1,
+		Size                   = UDim2.new(1, -50, 1, 0),
+		Position               = UDim2.new(0, 16, 0, 0),
+		TextXAlignment         = Enum.TextXAlignment.Left,
+		Parent                 = execHeader,
+	})
+	local execCloseBtn = make("TextButton", {
+		Text                   = "X",
+		Font                   = Enum.Font.GothamMedium,
+		TextSize               = 14,
+		TextColor3             = P.dim,
+		BackgroundTransparency = 1,
+		Size                   = UDim2.new(0, 44, 0, 44),
+		Position               = UDim2.new(1, -44, 0, 0),
+		Parent                 = execHeader,
+	})
+	execCloseBtn.MouseEnter:Connect(function() tw(execCloseBtn, {TextColor3 = P.text}, 0.15) end)
+	execCloseBtn.MouseLeave:Connect(function() tw(execCloseBtn, {TextColor3 = P.dim}, 0.15) end)
+
+	-- accent divider under header
+	local execDivider = make("Frame", {
+		Size             = UDim2.new(1, -32, 0, 1),
+		Position         = UDim2.new(0, 16, 0, 44),
+		BackgroundColor3 = P.accent,
+		BorderSizePixel  = 0,
+		Parent           = execPanel,
+	})
+	bindAccent(execDivider, "BackgroundColor3")
+
+	-- line-number strip
+	local execLineFrame = make("Frame", {
+		Size             = UDim2.new(0, 30, 1, -(44 + 1 + 50)),
+		Position         = UDim2.new(0, 0, 0, 46),
+		BackgroundColor3 = P.bgMed,
+		BorderSizePixel  = 0,
+		ClipsDescendants = true,
+		Parent           = execPanel,
+	})
+	local execLineLabel = make("TextLabel", {
+		Text                   = "1",
+		Font                   = Enum.Font.Code,
+		TextSize               = 12,
+		TextColor3             = P.muted,
+		BackgroundTransparency = 1,
+		Size                   = UDim2.new(1, -4, 1, 0),
+		Position               = UDim2.new(0, 0, 0, 5),
+		TextXAlignment         = Enum.TextXAlignment.Right,
+		TextYAlignment         = Enum.TextYAlignment.Top,
+		Parent                 = execLineFrame,
+	})
+
+	-- scrollable editor
+	local execEditorScroll = make("ScrollingFrame", {
+		Size                = UDim2.new(1, -30, 1, -(44 + 1 + 50)),
+		Position            = UDim2.new(0, 30, 0, 46),
+		BackgroundColor3    = P.bgMed,
+		ScrollBarThickness  = 4,
+		BorderSizePixel     = 0,
+		CanvasSize          = UDim2.new(0, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		Parent              = execPanel,
+	})
+	bindAccent(execEditorScroll, "ScrollBarImageColor3")
+
+	local execCodeInput = make("TextBox", {
+		Text                   = "",
+		PlaceholderText        = "-- Write your Lua script here...",
+		PlaceholderColor3      = P.muted,
+		Font                   = Enum.Font.Code,
+		TextSize               = 13,
+		TextColor3             = P.text,
+		BackgroundTransparency = 1,
+		Size                   = UDim2.new(1, -10, 1, 0),
+		Position               = UDim2.new(0, 8, 0, 5),
+		TextXAlignment         = Enum.TextXAlignment.Left,
+		TextYAlignment         = Enum.TextYAlignment.Top,
+		MultiLine              = true,
+		ClearTextOnFocus       = false,
+		TextWrapped            = false,
+		Parent                 = execEditorScroll,
+	})
+
+	-- live line numbers
+	execCodeInput:GetPropertyChangedSignal("Text"):Connect(function()
+		local n = 1
+		for _ in execCodeInput.Text:gmatch("\n") do n = n + 1 end
+		local t = {}
+		for i = 1, n do t[i] = tostring(i) end
+		execLineLabel.Text = table.concat(t, "\n")
+	end)
+
+	-- bottom button row
+	local execBtnRow = make("Frame", {
+		Size             = UDim2.new(1, 0, 0, 44),
+		Position         = UDim2.new(0, 0, 1, -44),
+		BackgroundTransparency = 1,
+		Parent           = execPanel,
+	})
+	pad(execBtnRow, 6, 6, 12, 12)
+	make("UIListLayout", {
+		FillDirection  = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Left,
+		VerticalAlignment   = Enum.VerticalAlignment.Center,
+		Padding        = UDim.new(0, 6),
+		Parent         = execBtnRow,
+	})
+
+	local function execBtn(txt, primary)
+		local b = make("TextButton", {
+			Text             = txt,
+			Font             = Enum.Font.GothamMedium,
+			TextSize         = 12,
+			TextColor3       = primary and Color3.new(1,1,1) or P.text,
+			BackgroundColor3 = primary and P.accent or P.bgLight,
+			AutoButtonColor  = false,
+			Size             = UDim2.new(0, 90, 0, 30),
+			Parent           = execBtnRow,
+		})
+		corner(b, 8)
+		if primary then
+			bindAccent(b, "BackgroundColor3")
+			b.MouseEnter:Connect(function() tw(b, {BackgroundColor3 = P.accentDim}, 0.15) end)
+			b.MouseLeave:Connect(function() tw(b, {BackgroundColor3 = P.accent}, 0.15) end)
+		else
+			b.MouseEnter:Connect(function() tw(b, {BackgroundColor3 = P.bgHover}, 0.15) end)
+			b.MouseLeave:Connect(function() tw(b, {BackgroundColor3 = P.bgLight}, 0.15) end)
+		end
+		return b
+	end
+
+	local execRunBtn   = execBtn("Execute", true)
+	local execClrBtn   = execBtn("Clear",   false)
+
+	-- Execute
+	execRunBtn.MouseButton1Click:Connect(function()
+		local code = execCodeInput.Text
+		if code == "" or code:match("^%s*$") then
+			notify("No script to execute", "warning"); return
+		end
+		local fn, loadErr = loadstring(code)
+		if not fn then
+			local short = tostring(loadErr):gsub("%[.+%]:", ""):match("^%s*(.-)%s*$")
+			notify("Syntax: " .. short, "error"); return
+		end
+		local ok, runErr = pcall(fn)
+		if ok then
+			notify("Script executed", "success")
+		else
+			notify("Error: " .. tostring(runErr), "error")
+		end
+	end)
+
+	-- Clear
+	execClrBtn.MouseButton1Click:Connect(function()
+		execCodeInput.Text = ""
+		execLineLabel.Text = "1"
+		notify("Editor cleared", "info")
+	end)
+
+	makeDraggable(execPanel, execHeader)
+
+	local function closeExecutor()
+		execOpen = false
+		tw(execPanel, {Size = UDim2.new(0, 520, 0, 0)}, 0.2)
+		task.delay(0.22, function() execPanel.Visible = false end)
+	end
+	local function openExecutor()
+		execOpen = true
+		execPanel.Visible = true
+		tw(execPanel, {Size = UDim2.new(0, 520, 0, 360)}, 0.3)
+	end
+	toggleExecutor = function()
+		if execOpen then closeExecutor() else openExecutor() end
+	end
+
+	execCloseBtn.MouseButton1Click:Connect(closeExecutor)
+
+	-- ── Top-left toggle button ─────────────────────
+	-- Uses a script/code icon. Fades in when the command bar opens.
+	execToggleBtn = make("TextButton", {
+		Name                   = "ExecToggleBtn",
+		Text                   = "{ }",
+		Font                   = Enum.Font.GothamBold,
+		TextSize               = 13,
+		TextColor3             = P.text,
+		BackgroundColor3       = P.bgMed,
+		BackgroundTransparency = 1,
+		Size                   = UDim2.new(0, 38, 0, 38),
+		Position               = UDim2.new(0, 10, 0, 10),
+		AutoButtonColor        = false,
+		Parent                 = gui,
+	})
+	corner(execToggleBtn, 10)
+	bindAccent(stroke(execToggleBtn, P.accent, 1.5, 1), "Color")
+
+	execToggleBtn.MouseButton1Click:Connect(toggleExecutor)
+	execToggleBtn.MouseEnter:Connect(function()
+		tw(execToggleBtn, {BackgroundTransparency = 0, Size = UDim2.new(0, 42, 0, 42)}, 0.15)
+		local s = execToggleBtn:FindFirstChildOfClass("UIStroke")
+		if s then tw(s, {Transparency = 0}, 0.15) end
+	end)
+	execToggleBtn.MouseLeave:Connect(function()
+		if S.barOpen then
+			tw(execToggleBtn, {BackgroundTransparency = 0.2, Size = UDim2.new(0, 38, 0, 38)}, 0.15)
+			local s = execToggleBtn:FindFirstChildOfClass("UIStroke")
+			if s then tw(s, {Transparency = 0.3}, 0.15) end
+		end
+	end)
+end -- close executor do-block
+
 
 -- ╔═══════════════════════════════════════════╗
 -- ║  FEATURE  IMPLEMENTATIONS                ║
@@ -2778,6 +3031,381 @@ defCmd("cmds", {"commands", "help"}, "", "Toggle commands list", "Utility", func
 	-- handled specially after execute
 end)
 
+defCmd("executor", {"exec", "luaexec"}, "", "Open Lua script executor", "Utility", function()
+	toggleExecutor()
+end)
+
+-- ── VEHICLE FLY ─────────────────────────────
+defCmd("vfly", {"vehiclefly"}, "[speed]", "Fly while in a vehicle seat", "Movement", function(a)
+	local spd = (a[1] and tonumber(a[1])) or 50
+	spd = math.clamp(spd, 1, 2000)
+	if S.vflyOn then
+		S.vflyOn = false
+		if S.vflyConn then S.vflyConn:Disconnect(); S.vflyConn = nil end
+		local seat = workspace:FindFirstChildWhichIsA("VehicleSeat", true)
+		if seat then
+			local bv = seat:FindFirstChild("_VFlyBV")
+			local bg = seat:FindFirstChild("_VFlyBG")
+			if bv then bv:Destroy() end
+			if bg then bg:Destroy() end
+		end
+		notify("Vehicle Fly OFF", "info")
+	else
+		local hrp = getHRP()
+		if not hrp then notify("No character", "error"); return end
+		local seat = hrp.Parent:FindFirstChildWhichIsA("VehicleSeat")
+				or workspace:FindFirstChildWhichIsA("VehicleSeat", true)
+		if not seat then notify("No vehicle seat found", "error"); return end
+		local bv = Instance.new("BodyVelocity")
+		bv.Name = "_VFlyBV"; bv.MaxForce = Vector3.new(1e9,1e9,1e9); bv.Velocity = Vector3.zero; bv.Parent = seat
+		local bg = Instance.new("BodyGyro")
+		bg.Name = "_VFlyBG"; bg.MaxTorque = Vector3.new(1e9,1e9,1e9); bg.P = 9e4; bg.CFrame = seat.CFrame; bg.Parent = seat
+		S.vflyOn = true
+		S.vflySpeed = spd
+		S.vflyConn = conn(RunService.RenderStepped:Connect(function()
+			if not S.vflyOn then return end
+			local bv2 = seat:FindFirstChild("_VFlyBV")
+			local bg2 = seat:FindFirstChild("_VFlyBG")
+			if not bv2 or not bg2 then S.vflyOn = false; return end
+			local cam = Camera.CFrame
+			local dir = Vector3.zero
+			if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.LookVector end
+			if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.LookVector end
+			if UIS:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.RightVector end
+			if UIS:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.RightVector end
+			if UIS:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.yAxis end
+			if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then dir = dir - Vector3.yAxis end
+			bv2.Velocity = dir.Magnitude > 0 and dir.Unit * S.vflySpeed or Vector3.zero
+			bg2.CFrame = cam
+		end))
+		notify("Vehicle Fly ON (speed " .. spd .. ")", "success")
+	end
+end)
+
+defCmd("unvfly", {}, "", "Stop vehicle fly", "Movement", function()
+	if S.vflyOn then
+		S.vflyOn = false
+		if S.vflyConn then S.vflyConn:Disconnect(); S.vflyConn = nil end
+		notify("Vehicle Fly OFF", "info")
+	else
+		notify("Vehicle Fly is not active", "warning")
+	end
+end)
+
+-- ── LOOPKILL ─────────────────────────────────
+defCmd("loopkill", {"lk"}, "<player>", "Repeatedly fling/kill a player", "Combat", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if not target then notify("Player not found", "error"); return end
+	if S.loopKillOn then
+		S.loopKillOn = false
+		notify("Loop Kill OFF", "info"); return
+	end
+	S.loopKillOn = true
+	notify("Loop Kill ON -> " .. target.Name, "success")
+	task.spawn(function()
+		while S.loopKillOn do
+			local hrp = getHRP()
+			local tc = target.Character
+			if hrp and tc then
+				local th = tc:FindFirstChild("HumanoidRootPart")
+				if th then
+					hrp.CFrame = th.CFrame * CFrame.new(0, 0, 1)
+					task.wait(0.05)
+					hrp.CFrame = th.CFrame
+				end
+			end
+			task.wait(0.1)
+		end
+	end)
+end)
+
+defCmd("unloopkill", {"unlk"}, "", "Stop loop kill", "Combat", function()
+	S.loopKillOn = false
+	notify("Loop Kill OFF", "info")
+end)
+
+-- ── LOOP BRING ────────────────────────────────
+defCmd("loopbring", {"lb"}, "<player>", "Repeatedly bring a player to you", "Movement", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if not target then notify("Player not found", "error"); return end
+	if S.loopBringOn then
+		S.loopBringOn = false
+		notify("Loop Bring OFF", "info"); return
+	end
+	S.loopBringOn = true
+	notify("Loop Bring ON -> " .. target.Name, "success")
+	task.spawn(function()
+		while S.loopBringOn do
+			local hrp = getHRP()
+			local tc = target.Character
+			if hrp and tc then
+				local th = tc:FindFirstChild("HumanoidRootPart")
+				if th then th.CFrame = hrp.CFrame * CFrame.new(0, 0, -3) end
+			end
+			task.wait(0.1)
+		end
+	end)
+end)
+
+defCmd("unloopbring", {"unlb"}, "", "Stop loop bring", "Movement", function()
+	S.loopBringOn = false
+	notify("Loop Bring OFF", "info")
+end)
+
+-- ── GOTO CAM POS ─────────────────────────────
+defCmd("gotocampos", {"tocampos", "tcp"}, "", "Teleport to your camera position", "Movement", function()
+	local hrp = getHRP()
+	if not hrp then notify("No character", "error"); return end
+	hrp.CFrame = Camera.CFrame
+	notify("Teleported to camera position", "success")
+end)
+
+-- ── UNANCHOR WORKSPACE ────────────────────────
+defCmd("unanchorws", {"uaw"}, "", "Unanchor all workspace parts locally", "Utility", function()
+	local count = 0
+	for _, v in ipairs(workspace:GetDescendants()) do
+		if v:IsA("BasePart") and v.Anchored then
+			v.Anchored = false
+			count = count + 1
+		end
+	end
+	notify("Unanchored " .. count .. " parts", "success")
+end)
+
+-- ── NET SLEEP (freeze player on others' screens) ──
+defCmd("netsleep", {"ns"}, "<player>", "Freeze a player on others' screens (sethiddenproperty)", "Combat", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if not target then notify("Player not found", "error"); return end
+	local sethid = sethiddenproperty or set_hidden_property
+	if not sethid then notify("sethiddenproperty not available", "error"); return end
+	if not target.Character then notify("No character", "error"); return end
+	for _, v in ipairs(target.Character:GetChildren()) do
+		if v:IsA("BasePart") then
+			pcall(sethid, v, "NetworkIsSleeping", true)
+		elseif v:IsA("Accessory") and v:FindFirstChild("Handle") then
+			pcall(sethid, v.Handle, "NetworkIsSleeping", true)
+		end
+	end
+	notify("Net Sleep applied to " .. target.Name, "success")
+end)
+
+-- ── RESIZE CHAT ──────────────────────────────
+defCmd("resizechat", {"rc"}, "", "Make chat window resizable and draggable", "Utility", function()
+	pcall(function()
+		local settings = require(game:GetService("Chat").ClientChatModules.ChatSettings)
+		settings.WindowResizable = true
+		settings.WindowDraggable = true
+		notify("Chat resizable + draggable", "success")
+	end)
+end)
+
+-- ── XRAY WALLS (semi-transparent world) ──────
+defCmd("wallxray", {"walls"}, "", "Make walls semi-transparent (xray)", "Visual", function()
+	for _, v in ipairs(workspace:GetDescendants()) do
+		if v:IsA("BasePart") and not v.Parent:FindFirstChildOfClass("Humanoid") then
+			v.LocalTransparencyModifier = 0.6
+		end
+	end
+	notify("Wall xray ON", "success")
+end)
+
+defCmd("unwallxray", {"unwalls"}, "", "Remove wall xray", "Visual", function()
+	for _, v in ipairs(workspace:GetDescendants()) do
+		if v:IsA("BasePart") then
+			v.LocalTransparencyModifier = 0
+		end
+	end
+	notify("Wall xray OFF", "info")
+end)
+
+-- ── FREECAM GOTO ─────────────────────────────
+defCmd("tpcam", {"gocam"}, "", "Teleport to freecam position", "Movement", function()
+	local hrp = getHRP()
+	if not hrp then notify("No character", "error"); return end
+	hrp.CFrame = Camera.CFrame
+	notify("Teleported to camera", "success")
+end)
+
+-- ── NAMELESS ADMIN PORTS ─────────────────────
+defCmd("walkfling", {"wfling"}, "", "Invisible fling by modifying velocity", "Combat", function()
+	if S.walkFlingOn then
+		S.walkFlingOn = false
+		notify("Walkfling OFF", "info")
+	else
+		S.walkFlingOn = true
+		notify("Walkfling ON", "success")
+		task.spawn(function()
+			local hrp, c, vel, movel = nil, nil, nil, 0.1
+			while S.walkFlingOn do
+				RunService.Heartbeat:Wait()
+				if S.walkFlingOn then
+					c = Players.LocalPlayer.Character
+					hrp = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso") or c:FindFirstChild("UpperTorso"))
+					if c and hrp then
+						vel = hrp.Velocity
+						hrp.Velocity = vel * 10000 + Vector3.new(0, 10000, 0)
+						RunService.RenderStepped:Wait()
+						if c and hrp and hrp.Parent then
+							hrp.Velocity = vel
+						end
+						RunService.Stepped:Wait()
+						if c and hrp and hrp.Parent then
+							hrp.Velocity = vel + Vector3.new(0, movel, 0)
+							movel = movel * -1
+						end
+					end
+				end
+			end
+		end)
+	end
+end)
+
+defCmd("unwalkfling", {"unwfling"}, "", "Stop walkfling", "Combat", function()
+	S.walkFlingOn = false
+	notify("Walkfling OFF", "info")
+end)
+
+defCmd("lag", {}, "", "Spam chat with invisible characters to lag others", "Utility", function()
+	local Message = "a" .. string.rep(" ", 199)
+	local SayMessageRequest = game:GetService("ReplicatedStorage"):FindFirstChild("SayMessageRequest", true)
+	if not SayMessageRequest then notify("Chat not found", "error"); return end
+	for i = 1, 7 do
+		SayMessageRequest:FireServer(Message, "All")
+	end
+	
+	-- Anti-lag for local player
+	local Chat = Players.LocalPlayer:FindFirstChild("PlayerGui") and Players.LocalPlayer.PlayerGui:FindFirstChild("Chat")
+	local MessageDisplay = Chat and Chat:FindFirstChild("Frame_MessageLogDisplay", true)
+	local Scroller = MessageDisplay and MessageDisplay:FindFirstChild("Scroller")
+	if Scroller then
+		for _, x in next, Scroller:GetChildren() do
+			local label = x:FindFirstChildWhichIsA("TextLabel")
+			if label and label.Text:match(" ") then x:Destroy() end
+		end
+	end
+	notify("Lag sent (you are protected)", "success")
+end)
+
+defCmd("ping", {}, "", "Shows your current ping", "Utility", function()
+	local stats = game:GetService("Stats"):FindFirstChild("Network")
+	if stats then
+		local p = stats:FindFirstChild("ServerStatsItem") and stats.ServerStatsItem:FindFirstChild("Data Ping")
+		if p then
+			local ping = tonumber(string.match(p:GetValueString(), "%d+"))
+			if ping then notify("Ping: " .. tostring(ping) .. " ms", "info"); return end
+		end
+	end
+	notify("Could not read ping", "error")
+end)
+
+defCmd("fps", {}, "", "Shows your current FPS", "Utility", function()
+	local fps = math.floor(workspace:GetRealPhysicsFPS())
+	notify("FPS: " .. tostring(fps), "info")
+end)
+
+defCmd("accountage", {"accage"}, "<player>", "Shows the account age of a player", "Utility", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if not target then notify("Player not found", "error"); return end
+	notify(target.Name .. "'s Account Age: " .. tostring(target.AccountAge) .. " days", "info")
+end)
+
+defCmd("notoolscripts", {"nts"}, "", "Destroy all scripts in your backpack tools", "Utility", function()
+	local bp = Players.LocalPlayer:FindFirstChild("Backpack")
+	local count = 0
+	if bp then
+		for _, v in ipairs(bp:GetDescendants()) do
+			if v:IsA("LocalScript") or v:IsA("Script") then
+				v:Destroy()
+				count = count + 1
+			end
+		end
+	end
+	local char = Players.LocalPlayer.Character
+	if char then
+		for _, v in ipairs(char:GetDescendants()) do
+			if (v.Parent and v.Parent:IsA("Tool")) and (v:IsA("LocalScript") or v:IsA("Script")) then
+				v:Destroy()
+				count = count + 1
+			end
+		end
+	end
+	notify("Destroyed " .. count .. " tool scripts", "success")
+end)
+
+defCmd("idiot", {}, "<player>", "Call someone an idiot in chat", "Utility", function(a)
+	if #a == 0 then notify("Provide a player", "error"); return end
+	local target = getPlayer(a[1])
+	if not target then notify("Player not found", "error"); return end
+	local SayMessageRequest = game:GetService("ReplicatedStorage"):FindFirstChild("SayMessageRequest", true)
+	if SayMessageRequest then
+		SayMessageRequest:FireServer(target.Name .. " is a massive idiot.", "All")
+		notify("Message sent", "success")
+	else
+		notify("Chat not found", "error")
+	end
+end)
+
+local jokes = {
+	"Why do programmers prefer dark mode? Because light attracts bugs.",
+	"I told a joke over UDP. I'm not sure if you got it.",
+	"Why did the Lua scripter cross the road? To get to the other `end`.",
+	"How many programmers does it take to change a light bulb? None, that's a hardware problem.",
+	"A SQL query goes into a bar, walks up to two tables and asks... 'Can I join you?'"
+}
+defCmd("joke", {}, "", "Random joke generator", "Utility", function()
+	local SayMessageRequest = game:GetService("ReplicatedStorage"):FindFirstChild("SayMessageRequest", true)
+	if SayMessageRequest then
+		local j = jokes[math.random(1, #jokes)]
+		SayMessageRequest:FireServer(j, "All")
+		notify("Joke sent", "success")
+	else
+		notify("Chat not found", "error")
+	end
+end)
+
+defCmd("fakechat", {}, "<player> <msg>", "Spoof a chat message from a player", "Utility", function(a)
+	if #a < 2 then notify("Usage: fakechat <player> <message>", "error"); return end
+	local target = getPlayer(a[1])
+	if not target then notify("Player not found", "error"); return end
+	
+	table.remove(a, 1)
+	local msg = table.concat(a, " ")
+	
+	local SayMessageRequest = game:GetService("ReplicatedStorage"):FindFirstChild("SayMessageRequest", true)
+	if SayMessageRequest then
+		local padding = string.rep(" ", 120) -- invisible hair spaces
+		local spoofed = padding .. "[" .. target.Name .. "]: " .. msg
+		SayMessageRequest:FireServer(spoofed, "All")
+		notify("Fake chat sent", "success")
+	else
+		notify("Chat not found", "error")
+	end
+end)
+
+defCmd("tpua", {"bringunanchored"}, "<player>", "Teleport nearby unanchored parts to target (Inf Yield style)", "Utility", function(a)
+	local target = a[1] and getPlayer(a[1]) or Players.LocalPlayer
+	if not target then notify("Player not found", "error"); return end
+	
+	local targetHRP = target.Character and (target.Character:FindFirstChild("HumanoidRootPart") or target.Character:FindFirstChild("Torso"))
+	if not targetHRP then notify("Target has no root part", "error"); return end
+	
+	task.spawn(function()
+		local count = 0
+		for _, part in ipairs(workspace:GetDescendants()) do
+			if part:IsA("BasePart") and not part.Anchored and not part.Parent:FindFirstChild("Humanoid") then
+				part.CFrame = targetHRP.CFrame
+				count = count + 1
+				task.wait()
+			end
+		end
+		notify("Attempted to teleport " .. count .. " unanchored parts to " .. target.Name, "success")
+	end)
+end)
+
 defCmd("chat", {"say"}, "<msg>", "Send a chat message", "Utility", function(a)
 	if #a == 0 then notify("Provide a message", "error"); return end
 	local msg = table.concat(a, " ")
@@ -4157,6 +4785,9 @@ openBar = function()
 	input.Text = ""
 	sugFrame.Visible = false
 	tw(barWrap, {Position = BAR_Y_SHOWN}, 0.35)
+	tw(execToggleBtn, {BackgroundTransparency = 0.2}, 0.3)
+	local _es = execToggleBtn:FindFirstChildOfClass("UIStroke")
+	if _es then tw(_es, {Transparency = 0.3}, 0.3) end
 	task.defer(function()
 		input:CaptureFocus()
 	end)
@@ -4168,6 +4799,9 @@ closeBar = function()
 	input:ReleaseFocus()
 	sugFrame.Visible = false
 	tw(barWrap, {Position = BAR_Y_HIDDEN}, 0.3)
+	tw(execToggleBtn, {BackgroundTransparency = 1}, 0.2)
+	local _es2 = execToggleBtn:FindFirstChildOfClass("UIStroke")
+	if _es2 then tw(_es2, {Transparency = 1}, 0.2) end
 end
 
 -- ╔═══════════════════════════════════════════╗
